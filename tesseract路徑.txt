@@ -1,1 +1,0 @@
-AppData\Local\Programs\Tesseract-OCR\tessdata
