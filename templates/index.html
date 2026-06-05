@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>簡易 RAG 檢索系統 (Flask 版)</title>
+    <style>
+        body { font-family: "Microsoft JhengHei", sans-serif; background-color: #f8fafc; color: #0f172a; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); padding: 20px; }
+        .tabs { display: flex; border-bottom: 2px solid #cbd5e1; margin-bottom: 20px; }
+        .tab-btn { padding: 10px 20px; border: none; background: none; cursor: pointer; font-size: 16px; font-weight: bold; color: #64748b; }
+        .tab-btn.active { color: #0284c7; border-bottom: 3px solid #0284c7; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; color: #334155; }
+        input, select, textarea { width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box; }
+        input[type="radio"] { width: auto; margin-right: 8px; }
+        .btn { padding: 10px 15px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; color: white; }
+        .btn-green { background-color: #2da44e; }
+        .btn-red { background-color: #b91c1c; }
+        .btn-purple { background-color: #7c3aed; }
+        .btn-blue { background-color: #0284c7; }
+        .row { display: flex; gap: 15px; align-items: center; }
+        .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .monospace { font-family: "Consolas", "Menlo", monospace; }
+        .progress-bar { width: 100%; background-color: #e2e8f0; height: 10px; border-radius: 5px; overflow: hidden; margin-top: 10px; display: none; }
+        .progress-inner { height: 100%; background-color: #0284c7; width: 100%; animation: indet 1.5s infinite linear; }
+        @keyframes indet { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+        /* 檢視校對器佈局與滑鼠拖曳分隔線模擬 */
+        .inspect-body { display: flex; border: 1px solid #cbd5e1; height: 500px; margin-top: 15px; }
+        #list_chunks { width: 250px; min-width: 100px; border-right: none; overflow-y: auto; background: white; list-style: none; padding: 0; margin: 0; }
+        #list_chunks li { padding: 8px; border-bottom: 1px solid #e2e8f0; cursor: pointer; font-size: 13px; }
+        #list_chunks li:hover, #list_chunks li.active { background-color: #e2e8f0; }
+        .resize-handle { width: 6px; background-color: #cbd5e1; cursor: col-resize; position: relative; user-select: none; }
+        #txt_chunk_content { flex: 1; height: 100%; background-color: #f8fafc; resize: none; border: none; padding: 10px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 15px; }
+        table, th, td { border: 1px solid #cbd5e1; }
+        th, td { padding: 10px; text-align: left; }
+        th { background-color: #e2e8f0; }
+        tr.selected { background-color: #bae6fd; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('upload-tab')">📁 新文件上傳與索引化</button>
+        <button class="tab-btn" onclick="switchTab('qa-tab')">💬 既有文件歷史檢索 Q & A</button>
+        <button class="tab-btn" onclick="switchTab('inspect-tab')">🔍 資料庫區塊檢視校對器</button>
+        <button class="tab-btn" onclick="switchTab('manager-tab')">🗂️ 已快取資料庫管理</button>
+    </div>
+
+    <div id="upload-tab" class="tab-content active">
+        <div class="form-group row">
+            <input type="file" id="pdf_file" accept=".pdf" style="display:none" onchange="onFileSelected()">
+            <button class="btn btn-blue" onclick="document.getElementById('pdf_file').click()">選擇 PDF 檔案...</button>
+            <span id="lbl_file_status" style="font-weight: bold; color: #334155;">尚未選擇任何檔案</span>
+        </div>
+
+        <div id="page_range_box" style="display:none; border: 1px solid #cbd5e1; padding: 15px; margin-bottom: 15px;">
+            <label>🎯 頁數擷取：大型文件 PDF 擷取頁數範圍 (空白表示擷取全檔)</label>
+            <div class="row">
+                <span>起始頁碼:</span><input type="text" id="ent_start_page" style="width:80px;">
+                <span>結束頁碼:</span><input type="text" id="ent_end_page" style="width:80px;">
+            </div>
+        </div>
+
+        <div id="conflict_group_box" style="display:none; border: 1px solid #cbd5e1; padding: 15px; margin-bottom: 15px;">
+            <p id="lbl_id_msg"></p>
+            <div id="radio_block">
+                <label><input type="radio" name="strategy" id="radio_keep" checked onchange="toggleStrategy()">直接導引原 ID (沿用歷史快取，免重新辨識)</label><br>
+                <label><input type="radio" name="strategy" id="radio_overwrite" onchange="toggleStrategy()">蓋過舊資料 (更換全新 ID，徹底重新辨識)</label>
+            </div>
+            <div class="form-group" style="margin-top:10px;">
+                <label>自動產生識別碼:</label>
+                <input type="text" id="ent_doc_id" class="monospace" readonly style="background-color: #e2e8f0;">
+            </div>
+        </div>
+
+        <div id="t1_vlm_config_box" style="display:none; border: 1px solid #cbd5e1; padding: 15px; margin-bottom: 15px;">
+            <div class="grid-2">
+                <div class="form-group">
+                    <label>✨ VLM 類別:</label>
+                    <select id="t1_vlm_provider_combo">
+                        <option value="本地 lmstudio">本地 lmstudio</option>
+                        <option value="遠端 ollama">遠端 ollama</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>主機連線資訊 (IP / Port):</label>
+                    <div class="row">
+                        <input type="text" id="t1_vlm_ip_edit" value="localhost">
+                        <input type="text" id="t1_vlm_port_edit" value="1234" style="width:80px;">
+                        <button class="btn btn-blue" onclick="refreshVlmModels('t1')">🔄 刷新模型</button>
+                    </div>
+                </div>
+            </div>
+            <div class="form-group">
+                <label>指定 VLM 模型名稱標籤:</label>
+                <select id="t1_vlm_model_edit"></select>
+            </div>
+        </div>
+
+        <div class="row">
+            <button id="btn_run_ocr" class="btn btn-green" style="flex:4; height:40px;" onclick="triggerOcr()">🚀 開始使用 bge-m3 萃取 文字/表格/圖片</button>
+            <button id="btn_stop_ocr" class="btn btn-red" style="flex:1; height:40px;" disabled onclick="cancelTask('ocr')">🛑 停止萃取</button>
+        </div>
+        <button id="btn_run_vlm_reconstruct" class="btn btn-purple" style="width:100%; height:40px; margin-top:10px; display:none;" onclick="triggerVlm()">✨ 開始使用 VLM 視覺萃取 (整合匯入原向量庫)</button>
+        
+        <div id="progress_ocr" class="progress-bar"><div class="progress-inner"></div></div>
+    </div>
+
+    <div id="qa-tab" class="tab-content">
+        <div class="grid-2">
+            <div class="form-group">
+                <label>文檔識別碼 (doc_id):</label>
+                <input type="text" id="ent_qa_doc_id">
+            </div>
+            <div class="form-group">
+                <label>LLM 類別:</label>
+                <select id="cbo_provider" onchange="onProviderChanged()">
+                    <option value="遠端 ollama">遠端 ollama</option>
+                    <option value="本地 lmstudio">本地 lmstudio</option>
+                    <option value="線上 Groq">線上 Groq</option>
+                </select>
+            </div>
+        </div>
+
+        <div id="dynamic_param_widget" style="background:#f1f5f9; padding:10px; border-radius:4px; margin-bottom:15px;"></div>
+
+        <div class="form-group">
+            <label>請輸入您想查詢的問題:</label>
+            <input type="text" id="ent_query">
+        </div>
+
+        <div class="row">
+            <button id="btn_send_query" class="btn btn-blue" style="flex:4; height:40px;" onclick="triggerQuery()">🔍 送出檢索並使模型回答</button>
+            <button id="btn_stop_query" class="btn btn-red" style="flex:1; height:40px;" disabled onclick="cancelTask('query')">🛑 停止生成</button>
+        </div>
+        <div id="progress_query" class="progress-bar"><div class="progress-inner"></div></div>
+
+        <div class="grid-2" style="margin-top:20px;">
+            <div>
+                <label>📋 檢索最終採信之文件脈絡</label>
+                <textarea id="txt_context" class="monospace" style="height:350px; background-color:#f8fafc;" readonly></textarea>
+            </div>
+            <div>
+                <label style="color:#166534;">💡 AI 生成之最佳解答</label>
+                <textarea id="txt_answer" style="height:350px; background-color:#f0fdf4; color:#14532d;" readonly></textarea>
+            </div>
+        </div>
+    </div>
+
+    <div id="inspect-tab" class="tab-content">
+        <div class="row">
+            <label style="width:200px;">🔐 目標文檔識別碼 (doc_id):</label>
+            <input type="text" id="ent_inspect_id">
+            <button class="btn btn-blue" onclick="loadInspectChunks()">🔍 讀取底層 Chunks 列表</button>
+        </div>
+        <div class="row" style="margin-top:10px;">
+            <label style="width:200px;">📋 已加載文檔識別碼:</label>
+            <input type="text" id="txt_doc_id" readonly style="background-color: #e2e8f0;">
+        </div>
+
+        <div class="inspect-body">
+            <ul id="list_chunks"></ul>
+            <div class="resize-handle" id="splitter"></div>
+            <textarea id="txt_chunk_content" class="monospace" readonly></textarea>
+        </div>
+    </div>
+
+    <div id="manager-tab" class="tab-content">
+        <div class="row">
+            <h3>📊 系統內既有快取向量資料庫列表：</h3>
+            <button class="btn btn-blue" onclick="refreshDatabases()">🔄 重新整理清單</button>
+        </div>
+        <table id="db_table">
+            <thead>
+                <tr>
+                    <th>#</th>
+                    <th>📄 原始文件名稱</th>
+                    <th>🎯 頁碼範圍說明</th>
+                    <th>🔐 歷史文檔識別碼 (doc_id)</th>
+                    <th>📊 總資料區塊</th>
+                </tr>
+            </thead>
+            <tbody></tbody>
+        </table>
+        <div style="text-align: right; margin-top:15px;">
+            <button class="btn btn-red" onclick="deleteSelectedCache()">🗑️ 徹底刪除選定之歷史快取</button>
+        </div>
+    </div>
+</div>
+
+<script>
+    let global_base_id = "";
+    let cached_inspect_data = [];
+    let selected_delete_id = null;
+
+    function switchTab(tabId) {
+        document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.getElementById(tabId).classList.add('active');
+        event.target.classList.add('active');
+        if(tabId === 'manager-tab') refreshDatabases();
+        
+        // 同步識別碼到第二分頁
+        if(tabId === 'qa-tab' && document.getElementById('ent_doc_id').value) {
+            document.getElementById('ent_qa_doc_id').value = document.getElementById('ent_doc_id').value;
+            onProviderChanged();
+        }
+    }
+
+    // 檔案選取後的重複確認機制
+    function onFileSelected() {
+        let fileInput = document.getElementById('pdf_file');
+        if(!fileInput.files.length) return;
+        let filename = fileInput.files[0].name;
+        document.getElementById('lbl_file_status').innerText = "已選取: " + filename;
+
+        fetch('/api/check_file', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({file_name: filename})
+        }).then(r => r.json()).then(data => {
+            global_base_id = data.base_doc_id;
+            document.getElementById('page_range_box').style.display = 'block';
+            document.getElementById('conflict_group_box').style.display = 'block';
+            document.getElementById('t1_vlm_config_box').style.display = 'block';
+            document.getElementById('btn_run_vlm_reconstruct').style.display = 'block';
+            
+            let msgEl = document.getElementById('lbl_id_msg');
+            let radioBlock = document.getElementById('radio_block');
+            if(data.is_duplicate) {
+                msgEl.innerText = "🔎 偵測到重複文件：此檔案過去已建立過快取索引！(直接點擊下方紫色按鈕做 VLM 萃取)";
+                msgEl.style.color = "#b45309";
+                radioBlock.style.display = "block";
+                document.getElementById('radio_keep').checked = true;
+            } else {
+                msgEl.innerText = "✨ 偵測到新文件：系統已自動分派識別碼。";
+                msgEl.style.color = "#1d4ed8";
+                radioBlock.style.display = "none";
+            }
+            toggleStrategy();
+            refreshVlmModels('t1');
+        });
+    }
+
+    function toggleStrategy() {
+        if(document.getElementById('radio_keep').checked) {
+            document.getElementById('ent_doc_id').value = global_base_id;
+        } else {
+            // 蓋過舊資料時，附加時間戳算新 MD5
+            let salt = global_base_id + "_" + new Date().getTime();
+            document.getElementById('ent_doc_id').value = btoa(salt).substring(0,16); // 簡易唯一編碼
+        }
+    }
+
+    function refreshVlmModels(prefix) {
+        let provider = document.getElementById('t1_vlm_provider_combo').value;
+        let ip = document.getElementById('t1_vlm_ip_edit').value;
+        let port = document.getElementById('t1_vlm_port_edit').value;
+        
+        fetch('/api/get_models', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({provider: provider, ip: ip, port: port})
+        }).then(r => r.json()).then(data => {
+            let combo = document.getElementById('t1_vlm_model_edit');
+            combo.innerHTML = "";
+            data.models.forEach(m => {
+                let opt = document.createElement('option');
+                opt.value = m; opt.innerText = m; combo.appendChild(opt);
+            });
+        });
+    }
+
+    // 處理 OCR 任務排程與輪詢
+    function triggerOcr() {
+        let fileInput = document.getElementById('pdf_file');
+        if(!fileInput.files.length) return alert("請先選取檔案");
+        
+        let formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('doc_id', document.getElementById('ent_doc_id').value);
+        formData.append('start_page', document.getElementById('ent_start_page').value);
+        formData.append('end_page', document.getElementById('ent_end_page').value);
+
+        document.getElementById('btn_run_ocr').disabled = true;
+        document.getElementById('btn_stop_ocr').disabled = false;
+        document.getElementById('progress_ocr').style.display = 'block';
+
+        fetch('/api/trigger_ocr', { method: 'POST', body: formData })
+        .then(() => pollStatus('ocr'));
+    }
+
+    function triggerVlm() {
+        document.getElementById('btn_run_ocr').disabled = true;
+        document.getElementById('btn_stop_ocr').disabled = false;
+        document.getElementById('progress_ocr').style.display = 'block';
+
+        fetch('/api/trigger_vlm', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                doc_id: document.getElementById('ent_doc_id').value,
+                provider: document.getElementById('t1_vlm_provider_combo').value,
+                model_name: document.getElementById('t1_vlm_model_edit').value,
+                ip: document.getElementById('t1_vlm_ip_edit').value,
+                port: document.getElementById('t1_vlm_port_edit').value
+            })
+        }).then(() => pollStatus('vlm'));
+    }
+
+    function cancelTask(type) {
+        fetch('/api/cancel/' + type, { method: 'POST' });
+    }
+
+    function pollStatus(type) {
+        let interval = setInterval(() => {
+            fetch('/api/task_status/' + type)
+            .then(r => r.json()).then(status => {
+                if(!status.running) {
+                    clearInterval(interval);
+                    document.getElementById('btn_run_ocr').disabled = false;
+                    document.getElementById('btn_stop_ocr').disabled = true;
+                    document.getElementById('progress_ocr').style.display = 'none';
+                    alert(status.msg);
+                }
+            });
+        }, 1000);
+    }
+
+    // 第二分頁動態 UI
+    function onProviderChanged() {
+        let p = document.getElementById('cbo_provider').value;
+        let widget = document.getElementById('dynamic_param_widget');
+        if(p === '遠端 ollama') {
+            widget.innerHTML = `📡 遠端主機 IP: <input type="text" id="ent_ol_ip" value="localhost" style="width:150px;"> 
+            Port: <input type="text" id="ent_ol_port" value="11434" style="width:80px;"> 
+            <button class="btn btn-blue" onclick="refreshQaModels()">🔄 刷新模型</button>
+            <select id="cbo_models" style="width:200px;"></select>`;
+        } else if(p === '本地 lmstudio') {
+            widget.innerHTML = `<button class="btn btn-blue" onclick="refreshQaModels()">🔄 掃描加載本地 LM Studio</button>
+            <select id="cbo_models" style="width:200px;"></select>`;
+        } else {
+            widget.innerHTML = `模型名稱: <input type="text" id="ent_groq_model" value="llama-3.1-8b-instant" style="width:200px;"> 
+            API Key: <input type="password" id="ent_groq_key" style="width:200px;">`;
+        }
+    }
+
+    function refreshQaModels() {
+        let provider = document.getElementById('cbo_provider').value;
+        let ip = (provider === '遠端 ollama') ? document.getElementById('ent_ol_ip').value : 'localhost';
+        let port = (provider === '遠端 ollama') ? document.getElementById('ent_ol_port').value : '1234';
+        
+        fetch('/api/get_models', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({provider: provider, ip: ip, port: port})
+        }).then(r => r.json()).then(data => {
+            let combo = document.getElementById('cbo_models');
+            combo.innerHTML = "";
+            data.models.forEach(m => {
+                let opt = document.createElement('option');
+                opt.value = m; opt.innerText = m; combo.appendChild(opt);
+            });
+            alert(`成功載入 ${data.models.length} 個可用模型。`);
+        });
+    }
+
+    function triggerQuery() {
+        document.getElementById('btn_send_query').disabled = true;
+        document.getElementById('btn_stop_query').disabled = false;
+        document.getElementById('progress_query').style.display = 'block';
+
+        let p = document.getElementById('cbo_provider').value;
+        let reqPayload = {
+            query: document.getElementById('ent_query').value,
+            doc_id: document.getElementById('ent_qa_doc_id').value,
+            provider: p
+        };
+        if(p === '線上 Groq') {
+            reqPayload.model_name = document.getElementById('ent_groq_model').value;
+            reqPayload.api_key = document.getElementById('ent_groq_key').value;
+        } else {
+            reqPayload.model_name = document.getElementById('cbo_models').value;
+            if(p === '遠端 ollama') {
+                reqPayload.ip = document.getElementById('ent_ol_ip').value;
+                reqPayload.port = document.getElementById('ent_ol_port').value;
+            }
+        }
+
+        fetch('/api/trigger_query', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(reqPayload)
+        }).then(() => {
+            let interval = setInterval(() => {
+                fetch('/api/task_status/query')
+                .then(r => r.json()).then(status => {
+                    if(!status.running) {
+                        clearInterval(interval);
+                        document.getElementById('btn_send_query').disabled = false;
+                        document.getElementById('btn_stop_query').disabled = true;
+                        document.getElementById('progress_query').style.display = 'none';
+                        document.getElementById('txt_context').value = status.context || "";
+                        document.getElementById('txt_answer').value = status.answer || "";
+                    }
+                });
+            }, 1000);
+        });
+    }
+
+    // 第三分頁 資料庫檢視校對器邏輯
+    function loadInspectChunks() {
+        let tid = document.getElementById('ent_inspect_id').value;
+        fetch('/api/inspect_chunks', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({doc_id: tid})
+        }).then(r => r.json()).then(data => {
+            if(data.error) return alert(data.error);
+            document.getElementById('txt_doc_id').value = data.target_id;
+            let ul = document.getElementById('list_chunks');
+            ul.innerHTML = "";
+            cached_inspect_data = data.chunks;
+            data.chunks.forEach(c => {
+                let li = document.createElement('li');
+                li.innerText = `[${c.index}] ID: ${c.id.substring(0,8)}... (Page: ${c.page} | Type: ${c.type})`;
+                li.onclick = () => {
+                    document.querySelectorAll('#list_chunks li').forEach(el=>el.classList.remove('active'));
+                    li.classList.add('active');
+                    document.getElementById('txt_chunk_content').value = c.content;
+                };
+                ul.appendChild(li);
+            });
+        });
+    }
+
+    // 第四分頁 快取管理列表
+    function refreshDatabases() {
+        fetch('/api/list_databases')
+        .then(r => r.json()).then(data => {
+            let tbody = document.querySelector('#db_table tbody');
+            tbody.innerHTML = "";
+            data.databases.forEach(db => {
+                let tr = document.createElement('tr');
+                tr.innerHTML = `<td>${db.index}</td><td>${db.orig_name}</td><td>${db.page_desc}</td><td>${db.doc_id}</td><td>${db.total_chunks}</td>`;
+                tr.onclick = () => {
+                    document.querySelectorAll('#db_table tr').forEach(el=>el.classList.remove('selected'));
+                    tr.classList.add('selected');
+                    selected_delete_id = db.doc_id;
+                };
+                tbody.appendChild(tr);
+            });
+        });
+    }
+
+    function deleteSelectedCache() {
+        if(!selected_delete_id) return alert("請先在表格中點選一列歷史快取。");
+        if(!confirm(`您確定要徹底移除選定的本地快取資料庫嗎？\n(doc_id: ${selected_delete_id})`)) return;
+
+        fetch('/api/delete_database', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({doc_id: selected_delete_id})
+        }).then(r => r.json()).then(data => {
+            if(data.success) {
+                alert("該文件快取資料庫已徹底抹除。");
+                refreshDatabases();
+                selected_delete_id = null;
+            }
+        });
+    }
+
+    // 模擬 ResizeHandle：滑鼠拖曳分隔線調整左側寬度
+    const splitter = document.getElementById('splitter');
+    const leftPane = document.getElementById('list_chunks');
+    let isDragging = false;
+    splitter.addEventListener('mousedown', (e) => { isDragging = true; document.body.style.cursor = 'col-resize'; });
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        let newWidth = e.clientX - leftPane.getBoundingClientRect().left;
+        if(newWidth > 100 && newWidth < 500) leftPane.style.width = newWidth + 'px';
+    });
+    document.addEventListener('mouseup', () => { isDragging = false; document.body.style.cursor = 'default'; });
+</script>
+
+</body>
+</html>

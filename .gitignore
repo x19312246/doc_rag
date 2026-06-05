@@ -1,0 +1,17 @@
+.continue/*
+# Ignore all files in the .continue directory
+.vscode/*
+# Ignore all files in the .vscode directory
+model_weights/*
+# Ignore all files in the model_weights directory
+data/*
+# Ignore all files in the data directory
+*.log
+# Ignore all log files
+*.zip
+# Ignore all zip files
+chroma_cache/*
+# Ignore all files in the chroma_cache directory
+chromadb_*/*
+*/__pycache__/*
+# Ignore all files in the __pycache__ directory
