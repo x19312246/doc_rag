@@ -120,7 +120,19 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
             TASK_STATUS["query"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
             return
             
-        full_prompt = f"Context:\n{context}\n\nQuestion:\n{user_query}\nAnswer in Traditional Chinese format:"
+        # 2. 建立精確引導的繁體中文提示詞（Prompt）
+        full_prompt = f"""你是一個專業的本地知識庫AI助手。請嚴格根據以下提供的【參考文本】來精準回答使用者的問題。
+如果參考文本中找不到答案，請委婉告知「無法從目前文件中找到相關解答」，切勿編造事實。
+
+【參考文本】：
+{context}
+
+=========================================
+
+【使用者的問題】：
+{user_query}
+
+請提供條理清晰的繁體中文回答："""
         
         provider_mapping = {
             "本地 lmstudio": "LM Studio 本地端",

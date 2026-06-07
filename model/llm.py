@@ -28,8 +28,13 @@ def query_llm(prompt, provider="Groq", model_name="", api_key="", custom_ip="loc
     else:
         raise ValueError(f"Unsupported provider: {provider}")
         
-    current_max_tokens = 1024 if provider == "Groq" else 2560
-    
+    #current_max_tokens = 1024 if provider == "Groq" else 2560
+    # 🌟 修正：將本地端與遠端的 max_tokens 放大到 4096，確保長表格重塑不會斷頭去尾
+    if provider in ["LM Studio 本地端", "Ollama 遠端/本地"]:
+        current_max_tokens = 4096
+    else:
+        current_max_tokens = 2048 if "llama3" in model_name.lower() else 1024
+        
     response = client.chat.completions.create(
         model=model_name,
         messages=[{"role": "user", "content": prompt}],
