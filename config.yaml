@@ -1,0 +1,27 @@
+name: Local Config
+version: 1.0.0
+schema: v1
+models:
+  - name: qwen2.5-coder:14b
+    provider: ollama
+    model: qwen2.5-coder:14b
+    contextLength: 32768
+    completionOptions:
+      num_ctx: 32768
+    apiBase: <ollamaip>
+    roles:
+      - chat
+      - edit
+      - apply
+
+  - name: codellama:34b
+    provider: ollama
+    model: codellama:34b
+    contextLength: 32768
+    completionOptions:
+      num_ctx: 32768
+    apiBase: <ollamaip>
+    roles:
+      - chat
+      - edit
+      - apply
