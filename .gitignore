@@ -15,3 +15,5 @@ chroma_cache/*
 chromadb_*/*
 */__pycache__/*
 # Ignore all files in the __pycache__ directory
+logs/*
+# Ignore all files in the logs directory
