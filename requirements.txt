@@ -24,4 +24,4 @@ transformers>=4.38.0
 torch>=2.2.0
 
 # === 5. PyQt6 === 
-PyQt6==6.11.0
+#PyQt6==6.11.0
