@@ -1,6 +1,6 @@
 import os
 from sentence_transformers import SentenceTransformer
-from indexer.config import EMBED_WEIGHTS_DIR
+from config.settings import EMBED_WEIGHTS_DIR
 
 model_name = "intfloat/multilingual-e5-large-instruct"
 #model_name = "BAAI/bge-m3"

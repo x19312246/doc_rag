@@ -23,7 +23,7 @@ os.chdir(project_root)
 
 # 載入自訂基礎模組
 from indexer.ocr_loader import extract_pdf_pages_info, convert_pages_to_chunks, reconstruct_pages_via_vlm
-from indexer.config import RAW_DATA_DIR, CHROMADB_DIR
+from config.settings import RAW_DATA_DIR, CHROMADB_DIR
 from indexer.indexer import build_vector_index
 from retriever.retriever import execute_rag_retrieval
 from model.llm import query_llm, get_local_models

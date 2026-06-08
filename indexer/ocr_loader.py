@@ -10,7 +10,7 @@ import pytesseract
 from pdf2image import convert_from_path
 from img2table.document import Image as ImgDoc
 from img2table.ocr import TesseractOCR
-from indexer.config import OUTPUT_TABLES_DIR
+from config.settings import OUTPUT_TABLES_DIR
 
 # 🌟 CRITICAL FIX: Force Hugging Face transformers to work in local-only mode
 # This prevents database upserts or vector loaders from hanging on network token validation

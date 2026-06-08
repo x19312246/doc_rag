@@ -1,6 +1,6 @@
 import chromadb
 from model.embeddings import ChromaEmbeddingFunction
-from indexer.config import CHROMADB_DIR
+from config.settings import CHROMADB_DIR
 
 def build_vector_index(chunks, doc_id):
     client = chromadb.PersistentClient(path=CHROMADB_DIR)
