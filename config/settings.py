@@ -3,7 +3,7 @@ import sys
 import glob
 
 embed_model_name = "intfloat/multilingual-e5-large-instruct"
-rerank_model_name = 'netease-youdao/bce-reranker-base_v1'
+rerank_model_name = 'BAAI/bge-reranker-base'
 
 """ 1. 核心路徑基礎設定 (自動識別開發或打包環境) """
 if getattr(sys, 'frozen', False):
