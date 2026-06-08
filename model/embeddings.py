@@ -1,14 +1,12 @@
-import os
+#import os
 from sentence_transformers import SentenceTransformer
 from config.settings import EMBED_WEIGHTS_DIR
-
-model_name = "intfloat/multilingual-e5-large-instruct"
-#model_name = "BAAI/bge-m3"
+from config.settings import embed_model_name
 
 class ChromaEmbeddingFunction:
     def __init__(self):
         # 💡 Automatically loads from or saves into the consolidated project folder
-        self.model = SentenceTransformer("intfloat/multilingual-e5-large-instruct", cache_folder=EMBED_WEIGHTS_DIR)
+        self.model = SentenceTransformer(embed_model_name, cache_folder=EMBED_WEIGHTS_DIR)
 
     def __call__(self, input):
         return self.model.encode(input).tolist()
@@ -19,4 +17,4 @@ class ChromaEmbeddingFunction:
         return self.model.encode(instruct_query).tolist()
 
     def name(self):
-        return model_name
+        return embed_model_name

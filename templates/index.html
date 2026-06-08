@@ -102,7 +102,7 @@
         </div>
 
         <div class="row">
-            <button id="btn_run_ocr" class="btn btn-green" style="flex:4; height:40px;" onclick="triggerOcr()">🚀 開始使用 bge-m3 萃取 文字/表格/圖片</button>
+            <button id="btn_run_ocr" class="btn btn-green" style="flex:4; height:40px;" onclick="triggerOcr()">🚀 開始使用 RAG模型 萃取 文字/表格/圖片</button>
             <button id="btn_stop_ocr" class="btn btn-red" style="flex:1; height:40px;" disabled onclick="cancelTask('ocr')">🛑 停止萃取</button>
         </div>
         <button id="btn_run_vlm_reconstruct" class="btn btn-purple" style="width:100%; height:40px; margin-top:10px; display:none;" onclick="triggerVlm()">✨ 開始使用 VLM 視覺萃取 (整合匯入原向量庫)</button>
@@ -113,7 +113,7 @@
     <div id="qa-tab" class="tab-content">
         <div class="grid-2">
             <div class="form-group">
-                <label>文檔識別碼 (doc_id):</label>
+                <label>文件識別碼 (doc_id):</label>
                 <input type="text" id="ent_qa_doc_id">
             </div>
             <div class="form-group">
@@ -153,12 +153,12 @@
 
     <div id="inspect-tab" class="tab-content">
         <div class="row">
-            <label style="width:200px;">🔐 目標文檔識別碼 (doc_id):</label>
+            <label style="width:200px;">🔐 目標文件識別碼 (doc_id):</label>
             <input type="text" id="ent_inspect_id">
             <button class="btn btn-blue" onclick="loadInspectChunks()">🔍 讀取底層 Chunks 列表</button>
         </div>
         <div class="row" style="margin-top:10px;">
-            <label style="width:200px;">📋 已加載文檔識別碼:</label>
+            <label style="width:200px;">📋 已加載文件識別碼:</label>
             <input type="text" id="txt_doc_id" readonly style="background-color: #e2e8f0;">
         </div>
 
@@ -180,7 +180,7 @@
                     <th>#</th>
                     <th>📄 原始文件名稱</th>
                     <th>🎯 頁碼範圍說明</th>
-                    <th>🔐 歷史文檔識別碼 (doc_id)</th>
+                    <th>🔐 歷史文件識別碼 (doc_id)</th>
                     <th>📊 總資料區塊</th>
                 </tr>
             </thead>

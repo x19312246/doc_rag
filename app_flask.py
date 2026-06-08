@@ -1,15 +1,17 @@
 """主應用程式網頁界面與邏輯控制，使用 Flask 框架實現"""
 import os
 import sys
-import time
+# import time
 import hashlib
 import threading
 from flask import Flask, render_template, request, jsonify
 
-# 💡 強制 Embedding 套件進入完全離線模式，避免連線 Hugging Face Hub 卡住
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+import config.settings  # 確保設定被載入，尤其是路徑相關的常數
+
+## 💡 強制 Embedding 套件進入完全離線模式，避免連線 Hugging Face Hub 卡住
+#os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+#os.environ["TRANSFORMERS_OFFLINE"] = "1"
+#os.environ["HF_DATASETS_OFFLINE"] = "1"
 
 # 處理環境路徑
 if getattr(sys, 'frozen', False):
@@ -232,7 +234,7 @@ def api_trigger_ocr():
     file.save(pdf_path)
     
     # 初始化執行緒狀態與取消權杖
-    TASK_STATUS["ocr"] = {"running": True, "msg": "正在進行 bge-m3 深度萃取...", "success": True}
+    TASK_STATUS["ocr"] = {"running": True, "msg": "正在進行深度萃取...", "success": True}
     ACTIVE_CANCELLATIONS["ocr"] = TaskCancellation()
     
     t = threading.Thread(
@@ -283,7 +285,7 @@ def api_trigger_query():
     target_port = data.get("port", "11434")
     
     if not target_id:
-        return jsonify({"error": "請先輸入有效的文檔識別碼。"}), 400
+        return jsonify({"error": "請先輸入有效的文件識別碼。"}), 400
         
     TASK_STATUS["query"] = {"running": True, "msg": "正在檢索向量庫並調用大模型解答...", "success": True}
     ACTIVE_CANCELLATIONS["query"] = TaskCancellation()

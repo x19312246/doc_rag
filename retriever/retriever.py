@@ -1,7 +1,7 @@
-import os
+# import os
 import re
 import chromadb
-from retriever.config import CHROMADB_DIR
+from config.settings import CHROMADB_DIR
 from model.embeddings import ChromaEmbeddingFunction
 from model.rerank import get_reranker
 
