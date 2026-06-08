@@ -307,7 +307,7 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
     import chromadb
     import requests
     import base64
-    from indexer.config import CHROMADB_DIR
+    from config.settings import CHROMADB_DIR
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     
     # Debug print block to verify parameter passing from Tab 1 UI controls
