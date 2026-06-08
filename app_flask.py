@@ -1,7 +1,6 @@
 """主應用程式網頁界面與邏輯控制，使用 Flask 框架實現"""
 import os
 import sys
-# import time
 import hashlib
 import threading
 from flask import Flask, render_template, request, jsonify
@@ -30,10 +29,7 @@ from logging.handlers import TimedRotatingFileHandler
 import time
 from flask import Flask, request, jsonify
 
-# =====================================================================
-# 日誌降噪與實時檔案分流系統
-# =====================================================================
-
+# 儲存LOG並降噪
 # 1. 確保專案目錄下有 logs 資料夾
 LOGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOGS_DIR, exist_ok=True)
@@ -97,6 +93,7 @@ console_handler.setFormatter(logging.Formatter('%(message)s')) # 保持原本乾
 console_handler.addFilter(ConsoleNoiseReductionFilter())
 werkzeug_log.addHandler(console_handler)
 
+# (以下為FLASK主要程式碼)
 # =====================================================================
 
 app = Flask(__name__, template_folder="templates", static_folder="static")
@@ -384,7 +381,7 @@ _LAST_TRACKED_STATUS = {}
 
 @app.route("/api/task_status/<task_type>", methods=["GET"])
 def api_task_status(task_type):
-    """前端輪詢執行緒狀態的 API 節點 (整合狀態變更即時控制台報警)"""
+    """前端輪詢執行緒狀態的 API 節點 (整合狀態變更即時控制台告警)"""
     global _LAST_TRACKED_STATUS
     
     # 1. 取得當前的狀態資料
@@ -457,7 +454,7 @@ def api_list_databases():
             total_chunks = len(col_data["ids"]) if col_data and "ids" in col_data else 0
             
             orig_name = "N/A"
-            page_desc = "全書範圍"
+            page_desc = "整份文件"
             
             if col_data and col_data["metadatas"]:
                 for m in col_data["metadatas"]:

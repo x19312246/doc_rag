@@ -1,4 +1,3 @@
-# import os
 import re
 import chromadb
 from config.settings import CHROMADB_DIR

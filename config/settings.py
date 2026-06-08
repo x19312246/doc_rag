@@ -2,7 +2,12 @@ import os
 import sys
 import glob
 
-embed_model_name = "intfloat/multilingual-e5-large-instruct"
+"""
+embed和rerank模型目前僅'intfloat/multilingual-e5-large-instruct'搭'BAAI/bge-reranker-base'可用
+其他須修改嵌入方式，太複雜。
+"""
+
+embed_model_name = 'intfloat/multilingual-e5-large-instruct'
 rerank_model_name = 'BAAI/bge-reranker-base'
 
 """ 1. 核心路徑基礎設定 (自動識別開發或打包環境) """

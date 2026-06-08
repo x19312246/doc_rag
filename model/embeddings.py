@@ -1,4 +1,3 @@
-#import os
 from sentence_transformers import SentenceTransformer
 from config.settings import EMBED_WEIGHTS_DIR
 from config.settings import embed_model_name
