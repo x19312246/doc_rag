@@ -26,7 +26,6 @@
         .progress-bar { width: 100%; background-color: #e2e8f0; height: 10px; border-radius: 5px; overflow: hidden; margin-top: 10px; display: none; }
         .progress-inner { height: 100%; background-color: #0284c7; width: 100%; animation: indet 1.5s infinite linear; }
         @keyframes indet { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
-        /* 檢視校對器佈局與滑鼠拖曳分隔線模擬 */
         .inspect-body { display: flex; border: 1px solid #cbd5e1; height: 500px; margin-top: 15px; }
         #list_chunks { width: 250px; min-width: 100px; border-right: none; overflow-y: auto; background: white; list-style: none; padding: 0; margin: 0; }
         #list_chunks li { padding: 8px; border-bottom: 1px solid #e2e8f0; cursor: pointer; font-size: 13px; }
@@ -81,9 +80,9 @@
             <div class="grid-2">
                 <div class="form-group">
                     <label>✨ VLM 類別:</label>
-                    <select id="t1_vlm_provider_combo">
-                        <option value="lmstudio">lmstudio</option>
-                        <option value="ollama">ollama</option>
+                    <select id="t1_vlm_provider_combo" onchange="onT1ProviderChanged()">
+                        <option value="lmstudio">LM Studio</option>
+                        <option value="ollama">Ollama</option>
                     </select>
                 </div>
                 <div class="form-group">
@@ -91,7 +90,7 @@
                     <div class="row">
                         <input type="text" id="t1_vlm_ip_edit" value="localhost">
                         <input type="text" id="t1_vlm_port_edit" value="1234" style="width:80px;">
-                        <button class="btn btn-blue" onclick="refreshVlmModels('t1')">🔄 刷新模型</button>
+                        <button class="btn btn-blue" id="btn_t1_refresh" onclick="refreshVlmModels('t1')">🔄 刷新模型</button>
                     </div>
                 </div>
             </div>
@@ -118,15 +117,15 @@
             </div>
             <div class="form-group">
                 <label>LLM 類別:</label>
-                <select id="cbo_provider" onchange="onProviderChanged()">
-                    <option value="ollama">ollama</option>
-                    <option value="lmstudio">lmstudio</option>
-                    <option value="Groq(online)">Groq</option>
+                <select id="cbo_provider" onchange="onQaProviderChanged()">
+                    <option value="lmstudio">LM Studio</option>
+                    <option value="ollama">Ollama</option>
+                    <option value="groq">線上 Groq</option>
                 </select>
             </div>
         </div>
 
-        <div id="dynamic_param_widget" style="background:#f1f5f9; padding:10px; border-radius:4px; margin-bottom:15px;"></div>
+        <div id="dynamic_param_widget" style="background:#f1f5f9; padding:15px; border-radius:4px; margin-bottom:15px;"></div>
 
         <div class="form-group">
             <label>請輸入您想查詢的問題:</label>
@@ -204,14 +203,12 @@
         event.target.classList.add('active');
         if(tabId === 'manager-tab') refreshDatabases();
         
-        // 同步識別碼到第二分頁
         if(tabId === 'qa-tab' && document.getElementById('ent_doc_id').value) {
             document.getElementById('ent_qa_doc_id').value = document.getElementById('ent_doc_id').value;
-            onProviderChanged();
+            onQaProviderChanged();
         }
     }
 
-    // 檔案選取後的重複確認機制
     function onFileSelected() {
         let fileInput = document.getElementById('pdf_file');
         if(!fileInput.files.length) return;
@@ -242,7 +239,7 @@
                 radioBlock.style.display = "none";
             }
             toggleStrategy();
-            refreshVlmModels('t1');
+            onT1ProviderChanged(); 
         });
     }
 
@@ -250,10 +247,21 @@
         if(document.getElementById('radio_keep').checked) {
             document.getElementById('ent_doc_id').value = global_base_id;
         } else {
-            // 蓋過舊資料時，附加時間戳算新 MD5
             let salt = global_base_id + "_" + new Date().getTime();
-            document.getElementById('ent_doc_id').value = btoa(salt).substring(0,16); // 簡易唯一編碼
+            document.getElementById('ent_doc_id').value = btoa(salt).substring(0,16);
         }
+    }
+
+    // 第一頁：動態切換 VLM 預設埠號
+    function onT1ProviderChanged() {
+        let provider = document.getElementById('t1_vlm_provider_combo').value;
+        let portInput = document.getElementById('t1_vlm_port_edit');
+        if (provider === 'lmstudio') {
+            portInput.value = '1234';
+        } else if (provider === 'ollama') {
+            portInput.value = '11434';
+        }
+        refreshVlmModels('t1');
     }
 
     function refreshVlmModels(prefix) {
@@ -275,7 +283,6 @@
         });
     }
 
-    // 處理 OCR 任務排程與輪詢
     function triggerOcr() {
         let fileInput = document.getElementById('pdf_file');
         if(!fileInput.files.length) return alert("請先選取檔案");
@@ -331,28 +338,34 @@
         }, 1000);
     }
 
-    // 第二分頁動態 UI
-    function onProviderChanged() {
+    // 第二頁：動態切換 UI 邏輯
+    function onQaProviderChanged() {
         let p = document.getElementById('cbo_provider').value;
         let widget = document.getElementById('dynamic_param_widget');
-        if(p === '遠端 ollama') {
-            widget.innerHTML = `📡 遠端主機 IP: <input type="text" id="ent_ol_ip" value="localhost" style="width:150px;"> 
-            Port: <input type="text" id="ent_ol_port" value="11434" style="width:80px;"> 
-            <button class="btn btn-blue" onclick="refreshQaModels()">🔄 刷新模型</button>
-            <select id="cbo_models" style="width:200px;"></select>`;
-        } else if(p === '本地 lmstudio') {
-            widget.innerHTML = `<button class="btn btn-blue" onclick="refreshQaModels()">🔄 掃描加載本地 LM Studio</button>
-            <select id="cbo_models" style="width:200px;"></select>`;
-        } else {
-            widget.innerHTML = `模型名稱: <input type="text" id="ent_groq_model" value="llama-3.1-8b-instant" style="width:200px;"> 
-            API Key: <input type="password" id="ent_groq_key" style="width:200px;">`;
+        
+        if (p === 'lmstudio' || p === 'ollama') {
+            let defaultPort = (p === 'lmstudio') ? '1234' : '11434';
+            widget.innerHTML = `
+                <div class="row">
+                    <span>主機 IP:</span> <input type="text" id="ent_qa_ip" value="localhost" style="width:150px;"> 
+                    <span>Port:</span> <input type="text" id="ent_qa_port" value="${defaultPort}" style="width:80px;"> 
+                    <button class="btn btn-blue" onclick="refreshQaModels()">🔄 刷新模型清單</button>
+                    <span>選擇模型:</span> <select id="cbo_models" style="flex:1;"></select>
+                </div>`;
+            refreshQaModels();
+        } else if (p === 'groq') {
+            widget.innerHTML = `
+                <div class="row">
+                    <span>線上模型:</span> <input type="text" id="ent_groq_model" value="llama-3.1-8b-instant" readonly style="background-color: #e2e8f0; width:220px;"> 
+                    <span>授權金鑰 API Key:</span> <input type="password" id="ent_groq_key" placeholder="gsk_..." style="flex:1;">
+                </div>`;
         }
     }
 
     function refreshQaModels() {
         let provider = document.getElementById('cbo_provider').value;
-        let ip = (provider === '遠端 ollama') ? document.getElementById('ent_ol_ip').value : 'localhost';
-        let port = (provider === '遠端 ollama') ? document.getElementById('ent_ol_port').value : '1234';
+        let ip = document.getElementById('ent_qa_ip').value;
+        let port = document.getElementById('ent_qa_port').value;
         
         fetch('/api/get_models', {
             method: 'POST',
@@ -360,12 +373,12 @@
             body: JSON.stringify({provider: provider, ip: ip, port: port})
         }).then(r => r.json()).then(data => {
             let combo = document.getElementById('cbo_models');
+            if(!combo) return;
             combo.innerHTML = "";
             data.models.forEach(m => {
                 let opt = document.createElement('option');
                 opt.value = m; opt.innerText = m; combo.appendChild(opt);
             });
-            alert(`成功載入 ${data.models.length} 個可用模型。`);
         });
     }
 
@@ -380,15 +393,14 @@
             doc_id: document.getElementById('ent_qa_doc_id').value,
             provider: p
         };
-        if(p === '線上 Groq') {
+        
+        if(p === 'groq') {
             reqPayload.model_name = document.getElementById('ent_groq_model').value;
             reqPayload.api_key = document.getElementById('ent_groq_key').value;
         } else {
             reqPayload.model_name = document.getElementById('cbo_models').value;
-            if(p === '遠端 ollama') {
-                reqPayload.ip = document.getElementById('ent_ol_ip').value;
-                reqPayload.port = document.getElementById('ent_ol_port').value;
-            }
+            reqPayload.ip = document.getElementById('ent_qa_ip').value;
+            reqPayload.port = document.getElementById('ent_qa_port').value;
         }
 
         fetch('/api/trigger_query', {
@@ -412,7 +424,6 @@
         });
     }
 
-    // 第三分頁 資料庫檢視校對器邏輯
     function loadInspectChunks() {
         let tid = document.getElementById('ent_inspect_id').value;
         fetch('/api/inspect_chunks', {
@@ -438,7 +449,6 @@
         });
     }
 
-    // 第四分頁 快取管理列表
     function refreshDatabases() {
         fetch('/api/list_databases')
         .then(r => r.json()).then(data => {
@@ -474,7 +484,6 @@
         });
     }
 
-    // 模擬 ResizeHandle：滑鼠拖曳分隔線調整左側寬度
     const splitter = document.getElementById('splitter');
     const leftPane = document.getElementById('list_chunks');
     let isDragging = false;

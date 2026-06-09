@@ -175,12 +175,14 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
 
 請提供條理清晰的繁體中文回答："""
         
-        provider_mapping = {
-            "lmstudio": "LM Studio(1234)",
-            "ollama": "Ollama(11434)",
-            "Groq(Online)": "Groq"
-        }
-        p_val = provider_mapping.get(provider, "Groq")
+        # 統一過濾前端傳送來的 provider 命名，對齊 llm.py 的內部識別規則
+        p_clean = provider.lower().strip()
+        if "lmstudio" in p_clean:
+            p_val = "lmstudio"
+        elif "ollama" in p_clean:
+            p_val = "ollama"
+        else:
+            p_val = "groq"
         
         answer = query_llm(
             prompt=full_prompt,
@@ -211,7 +213,8 @@ def index():
 @app.route("/api/get_models", methods=["POST"])
 def api_get_models():
     data = request.json or {}
-    provider = data.get("provider", "")
+    # 將字串統一轉成小寫，避免因為空白或大小寫而無法識別
+    provider = data.get("provider", "").lower().strip()
     ip = data.get("ip", "localhost").replace("http://", "").replace("https://", "").strip("/")
     port = data.get("port", "").strip()
     url = f"http://{ip}:{port}"
