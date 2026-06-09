@@ -6,6 +6,7 @@ import logging
 import time
 from logging.handlers import TimedRotatingFileHandler
 from flask import Flask, render_template, request, jsonify
+import json
 
 import config.settings  
 
@@ -23,6 +24,45 @@ from config.settings import RAW_DATA_DIR, CHROMADB_DIR
 from indexer.indexer import build_vector_index
 from retriever.retriever import execute_rag_retrieval
 from model.llm import query_llm, get_local_models
+
+# 🌟 修改匯入：從 config.settings 引入 CHROMADB_DIR
+from config.settings import RAW_DATA_DIR, CHROMADB_DIR
+
+# 🌟 將 NOTES_FILE 的路徑直接指向 CHROMADB_DIR 內
+NOTES_FILE = os.path.join(CHROMADB_DIR, "database_notes.json")
+
+# =====================================================================
+# FLASK APPLICATION SETUP & PRE-LOADING MODELS
+# =====================================================================
+
+app = Flask(__name__, template_folder="templates", static_folder="static")
+
+def preload_and_verify_weights():
+    """ 
+    在系統啟動時，主動檢查並預載入 embedding 與 rerank 模型。
+    下載或載入完成後即釋放物件連線，確保執行期安全。
+    """
+    print("\n==================================================")
+    print("[模型權重初始化檢查] 正在驗證本地 Embedding & Reranker 權重模型...")
+    try:
+        from sentence_transformers import SentenceTransformer, CrossEncoder
+        from config.settings import embed_model_name, rerank_model_name, EMBED_WEIGHTS_DIR, RERANK_WEIGHTS_DIR
+        
+        print(f" -> 正在檢查 Embedding 模型: {embed_model_name}")
+        embed_model = SentenceTransformer(embed_model_name, cache_folder=EMBED_WEIGHTS_DIR)
+        del embed_model # 驗證/下載完畢後直接釋放
+        
+        print(f" -> 正在檢查 Reranker 模型: {rerank_model_name}")
+        rerank_model = CrossEncoder(rerank_model_name, cache_folder=RERANK_WEIGHTS_DIR)
+        del rerank_model # 驗證/下載完畢後直接釋放
+        
+        print("[模型權重初始化檢查] 狀態：所有權重模型皆已就緒。")
+    except Exception as e:
+        print(f"[CRITICAL] 模型權重預載入失敗: {e}")
+    print("==================================================\n")
+
+# 在建立完 app 物件後立刻執行預載入
+preload_and_verify_weights()
 
 # =====================================================================
 # LOGGING CONFIGURATION & NOISE REDUCTION
@@ -400,21 +440,33 @@ def api_inspect_chunks():
     except Exception as e:
         return jsonify({"error": f"Exception occurred during chunk parsing: {e}"}), 500
 
-@app.route("/api/list_databases", methods=["GET"])
+# 修改原有的 @app.route("/api/list_databases") 路由，使其包含 metadata 中的 notes
+@app.route("/api/list_databases")
 def api_list_databases():
     try:
         import chromadb
         client = chromadb.PersistentClient(path=CHROMADB_DIR)
         collections = client.list_collections()
         
+        # 💡 先載入本地的備註 JSON 對照表
+        notes_data = {}
+        if os.path.exists(NOTES_FILE):
+            try:
+                with open(NOTES_FILE, "r", encoding="utf-8") as f:
+                    notes_data = json.load(f)
+            except Exception:
+                notes_data = {}
+        
         db_list = []
         for idx, col in enumerate(collections):
-            col_data = col.get(include=["metadatas"])
-            total_chunks = len(col_data["ids"]) if col_data and "ids" in col_data else 0
+            if not col.name.startswith("collection_"):
+                continue
+                
+            total_chunks = col.count()
+            orig_name = "未知檔案"
+            page_desc = "未知頁碼"
             
-            orig_name = "N/A"
-            page_desc = "Full Document"
-            
+            col_data = col.get(limit=1)
             if col_data and col_data["metadatas"]:
                 for m in col_data["metadatas"]:
                     if m and "source" in m:
@@ -424,14 +476,52 @@ def api_list_databases():
                         break
                         
             clean_doc_id = col.name.replace("collection_", "")
+            
+            # 💡 從本地 JSON 尋找備註，找不到則看有無舊快取的 metadata 保底，皆無則給空字串
+            saved_notes = notes_data.get(clean_doc_id, "")
+            if not saved_notes:
+                col_meta = col.metadata if col.metadata else {}
+                saved_notes = col_meta.get("notes", "")
+
             db_list.append({
                 "index": idx + 1,
                 "orig_name": orig_name,
                 "page_desc": page_desc,
                 "doc_id": clean_doc_id,
-                "total_chunks": total_chunks
+                "total_chunks": total_chunks,
+                "notes": saved_notes  # 傳給前端動態渲染
             })
         return jsonify({"databases": db_list})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# 🌟 新增路由：供修改與保存備註欄位
+@app.route("/api/update_database_notes", methods=["POST"])
+def api_update_database_notes():
+    data = request.json or {}
+    target_doc_id = data.get("doc_id", "").strip()
+    notes_content = data.get("notes", "").strip()
+    if not target_doc_id:
+        return jsonify({"error": "Missing target identifier"}), 400
+        
+    try:
+        # 讀取現有的備註 JSON 對照表
+        notes_data = {}
+        if os.path.exists(NOTES_FILE):
+            try:
+                with open(NOTES_FILE, "r", encoding="utf-8") as f:
+                    notes_data = json.load(f)
+            except Exception:
+                notes_data = {}
+                
+        # 更新該 doc_id 的備註內容
+        notes_data[target_doc_id] = notes_content
+        
+        # 寫回 JSON 檔案
+        with open(NOTES_FILE, "w", encoding="utf-8") as f:
+            json.dump(notes_data, f, ensure_ascii=False, indent=4)
+            
+        return jsonify({"success": True, "msg": "備註更新成功"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

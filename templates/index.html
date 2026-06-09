@@ -169,10 +169,16 @@
     </div>
 
     <div id="manager-tab" class="tab-content">
-        <div class="row">
+        <div class="row" style="margin-bottom: 15px;">
             <h3>📊 系統內既有快取向量資料庫列表：</h3>
             <button class="btn btn-blue" onclick="refreshDatabases()">🔄 重新整理清單</button>
         </div>
+
+        <div class="form-group" style="background: #f1f5f9; padding: 12px; border-radius: 4px; margin-bottom: 15px;">
+            <label style="margin-bottom: 5px; font-weight: bold; display: block;">🔍 搜尋篩選器 (支援原始文件名稱、識別碼與備註關鍵字)：</label>
+            <input type="text" id="ent_filter_keyword" placeholder="請輸入欲查詢的關鍵字..." oninput="filterManagerTable()" style="width: 100%; padding: 8px; border: 1px solid #cbd5e1; border-radius: 4px; box-sizing: border-box;">
+        </div>
+
         <table id="db_table">
             <thead>
                 <tr>
@@ -181,10 +187,19 @@
                     <th>🎯 頁碼範圍說明</th>
                     <th>🔐 歷史文件識別碼 (doc_id)</th>
                     <th>📊 總資料區塊</th>
-                </tr>
+                    <th>📝 備註說明欄位</th> </tr>
             </thead>
             <tbody></tbody>
         </table>
+
+        <div id="notes_editor_box" style="margin-top: 15px; padding: 15px; border: 1px dashed #0284c7; background: #f0f9ff; border-radius: 6px; display: none;">
+            <h4 style="margin: 0 0 10px 0; color: #0369a1;">📝 編輯所選文件快取備註：</h4>
+            <div style="display: flex; gap: 10px;">
+                <input type="text" id="txt_selected_notes" placeholder="在此輸入本文件的詳細特徵、製表年月或預算備註說明..." style="flex: 1; padding: 8px; border: 1px solid #0284c7; border-radius: 4px;">
+                <button class="btn btn-green" onclick="saveDatabaseNotes()" style="white-space: nowrap;">💾 保存備註</button>
+            </div>
+        </div>
+
         <div style="text-align: right; margin-top:15px;">
             <button class="btn btn-red" onclick="deleteSelectedCache()">🗑️ 徹底刪除選定之歷史快取</button>
         </div>
@@ -195,7 +210,115 @@
     let global_base_id = "";
     let cached_inspect_data = [];
     let selected_delete_id = null;
+    // 全域變數儲存原始資料庫清單，以便前端搜尋篩選
+    let global_db_list = [];
 
+    // 修改後最新：重新整理快取資料庫清單並初始化狀態
+    function refreshDatabases() {
+        fetch('/api/list_databases')
+        .then(r => r.json()).then(data => {
+            if(data.error) return alert(data.error);
+            
+            global_db_list = data.databases || [];
+            renderManagerTable(global_db_list);
+            
+            // 重置關閉備註編輯區
+            if (document.getElementById('notes_editor_box')) {
+                document.getElementById('notes_editor_box').style.display = 'none';
+            }
+            selected_delete_id = null;
+        });
+    }
+
+    // 將資料真正渲染至管理表格的獨立函數
+    function renderManagerTable(listData) {
+        let tbody = document.querySelector('#db_table tbody');
+        if (!tbody) return;
+        tbody.innerHTML = "";
+        
+        listData.forEach((db, idx) => {
+            let tr = document.createElement('tr');
+            tr.id = "db_row_" + db.doc_id;
+            
+            // 當點擊表格中的項目列時的觸發動作
+            tr.onclick = () => {
+                document.querySelectorAll('#db_table tr').forEach(el => el.classList.remove('selected'));
+                tr.classList.add('selected');
+                selected_delete_id = db.doc_id;
+                
+                // 顯示備註編輯方塊，並把既有的備註帶入輸入框中
+                if (document.getElementById('notes_editor_box')) {
+                    document.getElementById('notes_editor_box').style.display = 'block';
+                }
+                if (document.getElementById('txt_selected_notes')) {
+                    document.getElementById('txt_selected_notes').value = db.notes || "";
+                }
+            };
+            
+            // 處理顯示備註內文，若為空則顯示淡色提示字
+            let notesDisplay = db.notes ? db.notes : "<span style='color:#94a3b8; font-size:12px;'>點擊此列可編輯備註...</span>";
+            
+            tr.innerHTML = `
+                <td>${idx + 1}</td>
+                <td style="font-weight:bold;">${db.orig_name}</td>
+                <td>${db.page_desc}</td>
+                <td class="monospace">${db.doc_id}</td>
+                <td><span class="badge" style="background:#cbd5e1; padding:2px 6px; border-radius:4px;">${db.total_chunks} Chunks</span></td>
+                <td>${notesDisplay}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    // 前端實時無刷新關鍵字篩選功能 (支援原始檔名、識別碼與備註)
+    function filterManagerTable() {
+        let filterInput = document.getElementById('ent_filter_keyword');
+        if (!filterInput) return;
+        
+        let keyword = filterInput.value.trim().toLowerCase();
+        if(!keyword) {
+            renderManagerTable(global_db_list);
+            return;
+        }
+        
+        let filtered = global_db_list.filter(db => {
+            let nameMatch = (db.orig_name || "").toLowerCase().includes(keyword);
+            let idMatch = (db.doc_id || "").toLowerCase().includes(keyword);
+            let notesMatch = (db.notes || "").toLowerCase().includes(keyword);
+            return nameMatch || idMatch || notesMatch;
+        });
+        
+        renderManagerTable(filtered);
+    }
+
+    // 點擊儲存按鈕時，將備註打回後端 API 的保存請求
+    function saveDatabaseNotes() {
+        if(!selected_delete_id) return alert("請先點選想要編輯備註的文件快取列。");
+        let notesInput = document.getElementById('txt_selected_notes');
+        let notesText = notesInput ? notesInput.value.trim() : "";
+        
+        fetch('/api/update_database_notes', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                doc_id: selected_delete_id,
+                notes: notesText
+            })
+        }).then(r => r.json()).then(data => {
+            if(data.success) {
+                // 直接更新前端記憶體全域陣列裡的內容，不用重新洗牌頁面，維持現有的篩選輸入狀態
+                let item = global_db_list.find(db => db.doc_id === selected_delete_id);
+                if(item) item.notes = notesText;
+                
+                // 依當前的篩選字詞重新渲染畫面
+                filterManagerTable();
+                alert("備註欄位已儲存更新！");
+            } else {
+                alert("儲存失敗：" + data.error);
+            }
+        });
+    }
+    
     function switchTab(tabId) {
         document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -252,7 +375,6 @@
         }
     }
 
-    // 第一頁：動態切換 VLM 預設埠號
     function onT1ProviderChanged() {
         let provider = document.getElementById('t1_vlm_provider_combo').value;
         let portInput = document.getElementById('t1_vlm_port_edit');
@@ -338,7 +460,6 @@
         }, 1000);
     }
 
-    // 第二頁：動態切換 UI 邏輯
     function onQaProviderChanged() {
         let p = document.getElementById('cbo_provider').value;
         let widget = document.getElementById('dynamic_param_widget');
@@ -449,24 +570,6 @@
         });
     }
 
-    function refreshDatabases() {
-        fetch('/api/list_databases')
-        .then(r => r.json()).then(data => {
-            let tbody = document.querySelector('#db_table tbody');
-            tbody.innerHTML = "";
-            data.databases.forEach(db => {
-                let tr = document.createElement('tr');
-                tr.innerHTML = `<td>${db.index}</td><td>${db.orig_name}</td><td>${db.page_desc}</td><td>${db.doc_id}</td><td>${db.total_chunks}</td>`;
-                tr.onclick = () => {
-                    document.querySelectorAll('#db_table tr').forEach(el=>el.classList.remove('selected'));
-                    tr.classList.add('selected');
-                    selected_delete_id = db.doc_id;
-                };
-                tbody.appendChild(tr);
-            });
-        });
-    }
-
     function deleteSelectedCache() {
         if(!selected_delete_id) return alert("請先在表格中點選一列歷史快取。");
         if(!confirm(`您確定要徹底移除選定的本地快取資料庫嗎？\n(doc_id: ${selected_delete_id})`)) return;
@@ -487,13 +590,15 @@
     const splitter = document.getElementById('splitter');
     const leftPane = document.getElementById('list_chunks');
     let isDragging = false;
-    splitter.addEventListener('mousedown', (e) => { isDragging = true; document.body.style.cursor = 'col-resize'; });
-    document.addEventListener('mousemove', (e) => {
-        if (!isDragging) return;
-        let newWidth = e.clientX - leftPane.getBoundingClientRect().left;
-        if(newWidth > 100 && newWidth < 500) leftPane.style.width = newWidth + 'px';
-    });
-    document.addEventListener('mouseup', () => { isDragging = false; document.body.style.cursor = 'default'; });
+    if (splitter && leftPane) {
+        splitter.addEventListener('mousedown', (e) => { isDragging = true; document.body.style.cursor = 'col-resize'; });
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            let newWidth = e.clientX - leftPane.getBoundingClientRect().left;
+            if(newWidth > 100 && newWidth < 500) leftPane.style.width = newWidth + 'px';
+        });
+        document.addEventListener('mouseup', () => { isDragging = false; document.body.style.cursor = 'default'; });
+    }
 </script>
 
 </body>
