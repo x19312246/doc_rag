@@ -25,59 +25,64 @@ from indexer.indexer import build_vector_index
 from retriever.retriever import execute_rag_retrieval
 from model.llm import query_llm, get_local_models
 
-# 🌟 從 config.settings 引入 CHROMADB_DIR
+# 从 config.settings 引入 CHROMADB_DIR
 from config.settings import RAW_DATA_DIR, CHROMADB_DIR
 
-# 🌟 將 NOTES_FILE 的路徑直接指向 CHROMADB_DIR 內
+# 将 NOTES_FILE 的路径直接指向 CHROMADB_DIR 内
 NOTES_FILE = os.path.join(CHROMADB_DIR, "database_notes.json")
 
 # =====================================================================
-# 2. 核心全域變數與多執行緒鎖宣告 (💡 最安全的位置)
+# FLASK APPLICATION SETUP & ENVIRONMENT RELOADER CONTROL
 # =====================================================================
 
-# 確保結構完整，包含 ocr、vlm、query，且欄位一致
-TASK_STATUS = {
-    "ocr": {"running": False, "msg": "Idle", "success": True},
-    "vlm": {"running": False, "msg": "Idle", "success": True},
-    "query": {"running": False, "msg": "Idle", "success": True}
-}
+app = Flask(__name__, template_folder="templates")
 
-# 緊鄰全域變數宣告執行緒鎖
+# Initialize Thread Lock
 status_lock = threading.Lock()
 
-# =====================================================================
-# FLASK APPLICATION SETUP & PRE-LOADING MODELS
-# =====================================================================
-
-# 💡 統一在這裡建立唯一的 app 實體
-app = Flask(__name__, template_folder="templates", static_folder="static")
+# Global Task Status initialization controlled via Werkzeug Environment variable
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    print("[Flask Reloader] Real child process detected. Initializing TASK_STATUS cluster.")
+    TASK_STATUS = {
+        "ocr": {"running": False, "msg": "Idle", "success": True},
+        "vlm": {"running": False, "msg": "Idle", "success": True},
+        "query": {"running": False, "msg": "Idle", "success": True}
+    }
+else:
+    print("[Flask Reloader] Parent management process tracking standard boot sequence.")
+    TASK_STATUS = {
+        "ocr": {"running": False, "msg": "Manager Core Initializing", "success": True},
+        "vlm": {"running": False, "msg": "Manager Core Initializing", "success": True},
+        "query": {"running": False, "msg": "Manager Core Initializing", "success": True}
+    }
 
 def preload_and_verify_weights():
     """ 
-    在系統啟動時，主動檢查並預載入 embedding 與 rerank 模型。
-    下載或載入完成後即釋放物件連線，確保執行期安全。
+    Proactively checks and preloads embedding & rerank models on startup.
+    Object references are deleted immediately after verification to ensure runtime safety.
     """
     print("\n==================================================")
-    print("[模型權重初始化檢查] 正在驗證本地 Embedding & Reranker 權重模型...")
+    print("[Model Weight Initialization] Verifying local Embedding & Reranker configurations...")
     try:
         from sentence_transformers import SentenceTransformer, CrossEncoder
         from config.settings import embed_model_name, rerank_model_name, EMBED_WEIGHTS_DIR, RERANK_WEIGHTS_DIR
         
-        print(f" -> 正在檢查 Embedding 模型: {embed_model_name}")
+        print(f" -> Inspecting Embedding target: {embed_model_name}")
         embed_model = SentenceTransformer(embed_model_name, cache_folder=EMBED_WEIGHTS_DIR)
-        del embed_model # 驗證/下載完畢後直接釋放
+        del embed_model
         
-        print(f" -> 正在檢查 Reranker 模型: {rerank_model_name}")
+        print(f" -> Inspecting Reranker target: {rerank_model_name}")
         rerank_model = CrossEncoder(rerank_model_name, cache_folder=RERANK_WEIGHTS_DIR)
-        del rerank_model # 驗證/下載完畢後直接釋放
+        del rerank_model
         
-        print("[模型權重初始化檢查] 狀態：所有權重模型皆已就緒。")
+        print("[Model Weight Initialization] Status: All model configurations verified and ready.")
     except Exception as e:
-        print(f"[CRITICAL] 模型權重預載入失敗: {e}")
+        print(f"[CRITICAL] Model weight preloading workflow encountered a failure: {e}")
     print("==================================================\n")
 
-# 在建立完 app 物件後立刻執行預載入
-preload_and_verify_weights()
+# Run preloading only in the active worker process to prevent double memory usage
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+    preload_and_verify_weights()
 
 # =====================================================================
 # LOGGING CONFIGURATION & NOISE REDUCTION
@@ -98,22 +103,19 @@ file_handler = TimedRotatingFileHandler(
 file_handler.setFormatter(log_formatter)
 file_handler.setLevel(logging.INFO)
 
-# Define custom logger for application state updates
 app_logger = logging.getLogger('app_status_logger')
 app_logger.setLevel(logging.INFO)
 app_logger.addHandler(file_handler)
 
 werkzeug_log = logging.getLogger('werkzeug')
-
 for h in werkzeug_log.handlers[:]:
     werkzeug_log.removeHandler(h)
 
-# Filter out all high-frequency polling logs from both file and console
 class PollingNoiseFilter(logging.Filter):
     def filter(self, record):
         msg = record.getMessage()
         if "/api/task_status/" in msg:
-            return False  # Block all automated polling HTTP access logs completely
+            return False  
         return True
 
 file_handler.addFilter(PollingNoiseFilter())
@@ -162,7 +164,7 @@ def background_ocr_worker(pdf_path, current_generated_id, start_page, end_page, 
         )
         
         if not cancel_token.is_running:
-            with status_lock:  # 🌟 加鎖更新
+            with status_lock:  
                 TASK_STATUS["ocr"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
             return
             
@@ -174,11 +176,11 @@ def background_ocr_worker(pdf_path, current_generated_id, start_page, end_page, 
         )
         total_inserted = build_vector_index(chunks, current_generated_id)
         
-        with status_lock:  # 🌟 正常完成時加鎖更新（已剔除原本上方未加鎖的重複賦值）
+        with status_lock:  
             TASK_STATUS["ocr"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
 
     except Exception as err:
-        with status_lock:  # 🌟 異常發生時加鎖更新
+        with status_lock:  
             TASK_STATUS["ocr"] = {"running": False, "msg": str(err), "success": False}
 
 def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target_port, cancel_token):
@@ -193,19 +195,19 @@ def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target
             worker_thread=cancel_token
         )
         if not cancel_token.is_running:
-            with status_lock:  # 🌟 加鎖更新
+            with status_lock:  
                 TASK_STATUS["vlm"] = {"running": False, "msg": "VLM processing cancelled by user.", "success": False}
             return
         if not new_chunks:
-            with status_lock:  # 🌟 加鎖更新
+            with status_lock:  
                 TASK_STATUS["vlm"] = {"running": False, "msg": "No image source assets found or VLM response was blank.", "success": False}
             return
             
         total_inserted = build_vector_index(new_chunks, target_doc_id)
-        with status_lock:  # 🌟 正常完成時加鎖更新
+        with status_lock:  
             TASK_STATUS["vlm"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
     except Exception as err:
-        with status_lock:  # 🌟 異常發生時加鎖更新
+        with status_lock:  
             TASK_STATUS["vlm"] = {"running": False, "msg": str(err), "success": False}
 
 def background_query_worker(user_query, target_id, provider, model_name, api_key, target_ip, target_port, cancel_token):
@@ -214,7 +216,7 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
         context = execute_rag_retrieval(user_query, target_id)
         
         if not cancel_token.is_running:
-            with status_lock:  # 🌟 加鎖更新
+            with status_lock:  
                 TASK_STATUS["query"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
             return
             
@@ -231,7 +233,6 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
 
 請提供條理清晰的繁體中文回答："""
         
-        # 統一過濾前端傳送來的 provider 命名，對齊 llm.py 的內部識別規則
         p_clean = provider.lower().strip()
         if "lmstudio" in p_clean:
             p_val = "lmstudio"
@@ -248,7 +249,7 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
             custom_ip=target_ip,
             custom_port=target_port
         )
-        with status_lock:  # 🌟 正常完成時加鎖更新
+        with status_lock:  
             TASK_STATUS["query"] = {
                 "running": False, 
                 "msg": "Generation completed successfully", 
@@ -257,7 +258,7 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
                 "answer": answer
             }
     except Exception as err:
-        with status_lock:  # 🌟 異常發生時加鎖更新
+        with status_lock:  
             TASK_STATUS["query"] = {"running": False, "msg": str(err), "success": False, "context": "Process terminated.", "answer": f"Task status: {err}"}
 
 # -------------------------------------------------------------------------
@@ -281,7 +282,7 @@ def api_get_models():
     else:
         models = get_local_models(url, provider="LM Studio")
         
-    return jsonify({"models": models if models else ["查無模型載入"]})
+    return jsonify({"models": models if models else ["No models loaded"]})
 
 @app.route("/api/check_file", methods=["POST"])
 def api_check_file():
@@ -307,7 +308,6 @@ def api_check_file():
 def api_trigger_ocr():
     global TASK_STATUS, ACTIVE_CANCELLATIONS
     
-    # 🌟 修改：用 Lock 保護狀態檢查與更新
     with status_lock:
         if TASK_STATUS["ocr"]["running"]:
             return jsonify({"error": "OCR task is already running"}), 400
@@ -318,7 +318,6 @@ def api_trigger_ocr():
             TASK_STATUS["ocr"] = {"running": False, "msg": "No file provided", "success": False}
         return jsonify({"error": "No file provided"}), 400
         
-    # 🌟 核心修復：從 request.files 中正確取得 file 變數，避免 NameError 崩潰
     file = request.files['file']
     
     doc_id = request.form.get("doc_id", "")
@@ -332,7 +331,6 @@ def api_trigger_ocr():
     pdf_path = os.path.join(RAW_DATA_DIR, file.filename)
     file.save(pdf_path)
     
-    # 🌟 移除原本此處重複且未加鎖的 TASK_STATUS 設定
     ACTIVE_CANCELLATIONS["ocr"] = TaskCancellation()
     
     t = threading.Thread(
@@ -425,11 +423,10 @@ def api_task_status(task_type):
         _LAST_TRACKED_STATUS[task_type] = current_status_str
         
         status_icon = "🔄" if current_running else "✅"
-        if any(x in current_msg.lower() for x in ["cancel", "fail", "error"]):
+        if any(x in current_msg.lower() for x in ["cancel", "fail", "error", "warning"]):
             status_icon = "🛑"
             
         log_message = f"[{status_icon} Status Changed] Module: [{task_type.upper()}] | Running: {current_running} | Message: {current_msg}"
-        
         app_logger.info(log_message)
         
     return jsonify(status_data)
@@ -502,7 +499,6 @@ def api_list_databases():
                         break
                         
             clean_doc_id = col.name.replace("collection_", "")
-            
             saved_notes = notes_data.get(clean_doc_id, "")
             if not saved_notes:
                 col_meta = col.metadata if col.metadata else {}
