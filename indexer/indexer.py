@@ -31,7 +31,9 @@ def build_vector_index(chunks, doc_id):
         unique_metadatas.append(chunk["metadata"])
         
     if unique_ids:
-        collection.add(
+        # 🌟 將原先的 collection.add 改為 collection.upsert
+        # 這樣當相同的 chunk ID 寫入時，會自動更新（覆蓋）而不會發生 ID 衝突報錯
+        collection.upsert(
             ids=unique_ids,
             documents=unique_documents,
             metadatas=unique_metadatas
