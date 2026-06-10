@@ -1,14 +1,17 @@
 import re
 import chromadb
 from config.settings import CHROMADB_DIR
-from model.embeddings import ChromaEmbeddingFunction
+
+# 💡 引入修改後的 embeddings 單例與重排器單例方法
+from model.embeddings import embedding_instance
 from model.rerank import get_reranker
 
 def execute_rag_retrieval(user_query, target_id):
     db_client = chromadb.PersistentClient(path=CHROMADB_DIR)
     collection_name = f"collection_{target_id}"
     
-    embedding_fn = ChromaEmbeddingFunction()
+    # 💡 1. 將 embedding_fn 直接指定為全域的 embedding_instance，避免重複 new 物件
+    embedding_fn = embedding_instance
     collection = db_client.get_collection(name=collection_name, embedding_function=embedding_fn)
     
     # 檢查此資料庫內是否包含任何 VLM 重塑的區塊
@@ -51,6 +54,7 @@ def execute_rag_retrieval(user_query, target_id):
             forced_range_context = "\n\n".join(all_segments)
 
     # --- 兩階段雙深度檢索 (同時進行語意交叉) ---
+    # 💡 這裡直接使用單例的方法，不再有重複載入問題
     query_vector = embedding_fn.embed_query(user_query)
     
     # 將過濾條件加入 query 中
@@ -68,6 +72,7 @@ def execute_rag_retrieval(user_query, target_id):
         pairs = [[user_query, doc] for doc in documents]
         
         try:
+            # 💡 2. 呼叫最佳化後的 get_reranker()，它會直接返回已常駐記憶體的 CrossEncoder 單例
             reranker = get_reranker()
             scores = reranker.predict(pairs)
             scored_docs = sorted(zip(scores, documents, metadatas), key=lambda x: x[0], reverse=True)
@@ -79,6 +84,7 @@ def execute_rag_retrieval(user_query, target_id):
                 segment = f"【語意精選來源: {f_info} / 第 {p_info} 頁 / Rerank得分: {score:.4f}】\n{doc_text}"
                 context_segments.append(segment)
         except Exception as e:
+            print(f"[Retriever Error] Rerank 過程發生錯誤: {str(e)}")
             for i in range(min(12, len(documents))):
                 doc_text = documents[i]
                 meta_data = metadatas[i] if metadatas else {}
