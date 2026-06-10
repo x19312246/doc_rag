@@ -8,6 +8,10 @@ import pytesseract
 from pdf2image import convert_from_path
 from img2table.document import Image as ImgDoc
 from img2table.ocr import TesseractOCR
+import requests
+import base64
+import threading
+import time
 from config.settings import OUTPUT_TABLES_DIR, BASE_PATH
 
 OUTPUT_IMAGES_DIR = os.path.join(os.path.dirname(OUTPUT_TABLES_DIR), "out_images")
@@ -284,10 +288,29 @@ def convert_pages_to_chunks(pages_info, source_name="", start_page=None, end_pag
         
     return docs
 
+def _vlm_timeout_monitor(page_num, stop_event, worker_thread):
+    """
+    Background non-blocking watcher thread to alert the user when a single page 
+    VLM processing block exceeds the 600-second threshold.
+    """
+    start_time = time.time()
+    warned = False
+    while not stop_event.is_set():
+        if worker_thread and not worker_thread.is_running:
+            break
+        elapsed = time.time() - start_time
+        if elapsed >= 600.0 and not warned:
+            print("\n" + "="*80)
+            print(f"[VLM WARNING] Page {page_num} processing has exceeded 600 seconds (10 minutes)!")
+            print("              If local server resources show 0% load, the engine may be frozen.")
+            print("              The user can manually trigger 'Cancel' via the UI control panel at any time.")
+            print("="*80 + "\n")
+            warned = True
+            break
+        time.sleep(2.0)
+
 def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, target_port, worker_thread=None):
     import chromadb
-    import requests
-    import base64
     from config.settings import CHROMADB_DIR
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     
@@ -387,6 +410,15 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
             
             vlm_text = ""
             
+            # Start background monitoring thread for 600s warning trigger
+            monitor_stop = threading.Event()
+            monitor_thread = threading.Thread(
+                target=_vlm_timeout_monitor, 
+                args=(page_num, monitor_stop, worker_thread), 
+                daemon=True
+            )
+            monitor_thread.start()
+            
             if "ollama" in provider_clean:
                 url = f"http://{str(target_ip).strip()}:{str(target_port).strip()}/api/chat"
                 payload = {
@@ -427,6 +459,9 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                         print(f"[VLM ERROR] Page {page_num}: HTTP {res.status_code} - {res.text[:200]}")
                 except requests.exceptions.RequestException as req_err:
                     print(f"[VLM ERROR] Page {page_num}: Network error - {str(req_err)[:200]}")
+            
+            # Request terminated, clean up monitor thread safely
+            monitor_stop.set()
             
             if worker_thread and not worker_thread.is_running:
                 print(f"[VLM Reconstruct] Cancelled after VLM response for page {page_num}.")
