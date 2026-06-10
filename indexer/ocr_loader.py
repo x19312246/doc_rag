@@ -8,7 +8,7 @@ import pytesseract
 from pdf2image import convert_from_path
 from img2table.document import Image as ImgDoc
 from img2table.ocr import TesseractOCR
-from config.settings import OUTPUT_TABLES_DIR
+from config.settings import OUTPUT_TABLES_DIR, BASE_PATH
 
 OUTPUT_IMAGES_DIR = os.path.join(os.path.dirname(OUTPUT_TABLES_DIR), "out_images")
 os.makedirs(OUTPUT_IMAGES_DIR, exist_ok=True)
@@ -35,20 +35,14 @@ def group_words_to_lines(words, line_tol=3):
     return "\n".join(lines)
 
 def enhance_historical_text_image(pil_image):
-    """
-    Advanced preprocessing sequence designed to eliminate bleed-through text, 
-    background noise granules, and artificially boost text contrast before OCR.
-    """
     open_cv_image = np.array(pil_image)
     if len(open_cv_image.shape) == 3:
         gray = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2GRAY)
     else:
         gray = open_cv_image
 
-    # Bilateral filter removes background grain while keeping character edges sharp
     filtered = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
 
-    # Adaptive thresholding wipes out bleed-through shading and uneven illumination
     binary = cv2.adaptiveThreshold(
         filtered, 
         255, 
@@ -58,7 +52,6 @@ def enhance_historical_text_image(pil_image):
         15
     )
 
-    # Minor morphological closing to repair broken strokes on small fonts
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
     cleaned = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
 
@@ -88,7 +81,6 @@ def extract_pdf_pages_info(pdf_path, dpi=200, start_page=None, end_page=None, wo
         page_num = page_idx + 1
         print(f" -> Processing Page {page_num}/{total_pdf_pages}...")
         
-        # Define a persistent master image path for VLM re-entry references
         master_page_img_name = f"master_page_{page_num}_{hashlib.md5(str(pdf_path).encode()).hexdigest()[:6]}.png"
         master_page_img_path = os.path.join(OUTPUT_IMAGES_DIR, master_page_img_name)
         
@@ -102,9 +94,7 @@ def extract_pdf_pages_info(pdf_path, dpi=200, start_page=None, end_page=None, wo
             page_pil = pil_images[0] if pil_images else None
             
             if page_pil:
-                # Apply image enhancement to remove bleed-through and background granules
                 page_pil = enhance_historical_text_image(page_pil)
-                # Cache the processed master full-page image onto the disk storage permanently
                 page_pil.save(master_page_img_path, format="PNG")
                 
         except Exception as e:
@@ -228,7 +218,7 @@ def convert_pages_to_chunks(pages_info, source_name="", start_page=None, end_pag
                         "type": "text",
                         "start_page": meta_start,
                         "end_page": meta_end,
-                        "local_img_path": master_img
+                        "local_img_path": os.path.relpath(master_img, BASE_PATH) if master_img else ""
                     }
                 })
         
@@ -245,14 +235,13 @@ def convert_pages_to_chunks(pages_info, source_name="", start_page=None, end_pag
                         "type": "table",
                         "start_page": meta_start,
                         "end_page": meta_end,
-                        "local_img_path": master_img
+                        "local_img_path": os.path.relpath(master_img, BASE_PATH) if master_img else ""
                     }
                 })
                 
         for img_item in images:
             i_idx = img_item["image_idx"]
             f_name = img_item["file_name"]
-            f_path = img_item["file_path"]
             
             surrounding_context = raw_text.strip()[:200].replace("\n", " ")
             image_chunk_text = (
@@ -260,9 +249,12 @@ def convert_pages_to_chunks(pages_info, source_name="", start_page=None, end_pag
                 f"檔案名稱: {source_name}\n"
                 f"所在頁碼: 第 {page_num} 頁 (第 {i_idx} 張嵌入圖)\n"
                 f"實體圖片快取檔名: {f_name}\n"
-                f"實體圖片存放路徑: {f_path}\n"
+                f"實體圖片存放路徑: {f_name}\n"
                 f"圖片所在頁面之前景文字脈絡參考:\n{surrounding_context}"
             )
+            
+            chosen_path = master_img if master_img else img_item["file_path"]
+            
             docs.append({
                 "id": f"{source_name}_p{page_num}_img_i{i_idx}",
                 "text": image_chunk_text,
@@ -270,7 +262,7 @@ def convert_pages_to_chunks(pages_info, source_name="", start_page=None, end_pag
                     "page": page_num, 
                     "source": source_name, 
                     "type": "image",
-                    "local_img_path": master_img if master_img else f_path,
+                    "local_img_path": os.path.relpath(chosen_path, BASE_PATH) if chosen_path else "",
                     "start_page": meta_start,
                     "end_page": meta_end
                 }
@@ -293,23 +285,17 @@ def convert_pages_to_chunks(pages_info, source_name="", start_page=None, end_pag
     return docs
 
 def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, target_port, worker_thread=None):
-    """
-    Dedicated VLM extraction pipeline driven explicitly from the primary workspace tab inputs.
-    Bypasses secondary tab configurations and strictly maps to localized parameter structures.
-    """
     import chromadb
     import requests
     import base64
     from config.settings import CHROMADB_DIR
     from langchain_text_splitters import RecursiveCharacterTextSplitter
     
-    # Debug print block to verify parameter passing from Tab 1 UI controls
     print("[VLM Entry Verification]")
     print(f" -> Passed Provider: '{provider}'")
     print(f" -> Passed Model: '{model_name}'")
     print(f" -> Target Host URL: http://{target_ip}:{target_port}")
     
-    # 🌟 Pre-connection health check to detect service availability early
     provider_clean = str(provider).strip().lower()
     if "ollama" in provider_clean:
         health_url = f"http://{str(target_ip).strip()}:{str(target_port).strip()}/api/tags"
@@ -322,7 +308,7 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
         if res.status_code != 200:
             print(f"[VLM FATAL ERROR] Service at {target_ip}:{target_port} returned {res.status_code}. Aborting.")
             return []
-        print("[VLM Health Check] ✓ Service is online and responding.")
+        print("[VLM Health Check] Service is online and responding.")
     except requests.exceptions.Timeout:
         print(f"[VLM FATAL ERROR] Connection timeout to {target_ip}:{target_port}. Service may be unresponsive. Aborting.")
         return []
@@ -354,13 +340,14 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
         if meta.get("local_img_path"):
             p_num = meta.get("page", 1)
             if p_num > 0:
-                image_tasks[p_num] = meta.get("local_img_path")
+                rel_path = meta.get("local_img_path")
+                if os.path.isabs(rel_path):
+                    image_tasks[p_num] = rel_path
+                else:
+                    image_tasks[p_num] = os.path.normpath(os.path.join(BASE_PATH, rel_path))
+                    
         if meta.get("source"):
             source_name = meta.get("source")
-        if meta.get("start_page"):
-            meta_start = meta.get("start_page")
-        if meta.get("end_page"):
-            meta_end = meta.get("end_page")
             
     if not image_tasks:
         print("[VLM Engine] Termination: No master full-page image reference found in metadata database.")
@@ -381,7 +368,6 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
         print(f"[VLM Reconstruct] Routing page {page_num} via explicit target specs...")
         
         try:
-            # 🌟 Check cancellation before loading image
             if worker_thread and not worker_thread.is_running:
                 print(f"[VLM Reconstruct] Cancelled before processing page {page_num}.")
                 break
@@ -389,7 +375,6 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
             with open(img_path, "rb") as image_file:
                 base64_image = base64.b64encode(image_file.read()).decode('utf-8')
                 
-            # 🌟 Check cancellation before sending VLM request
             if worker_thread and not worker_thread.is_running:
                 print(f"[VLM Reconstruct] Cancelled before VLM request for page {page_num}.")
                 break
@@ -402,7 +387,6 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
             
             vlm_text = ""
             
-            # Enforce absolute strict routing based on the decoupled Tab 1 provider option
             if "ollama" in provider_clean:
                 url = f"http://{str(target_ip).strip()}:{str(target_port).strip()}/api/chat"
                 payload = {
@@ -415,7 +399,6 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                     "stream": False
                 }
                 try:
-                    # 🌟 CRITICAL FIX: timeout=None eliminates the 120s limit for local Ollama pipelines
                     res = requests.post(url, json=payload, timeout=None)
                     if res.status_code == 200:
                         vlm_text = res.json().get("message", {}).get("content", "")
@@ -424,7 +407,6 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                 except requests.exceptions.RequestException as req_err:
                     print(f"[VLM ERROR] Page {page_num}: Network error - {str(req_err)[:200]}")
             else:
-                # Local LM Studio standard OpenAI Vision protocol format routing
                 url = f"http://{str(target_ip).strip()}:{str(target_port).strip()}/v1/chat/completions"
                 payload = {
                     "model": model_name,
@@ -438,7 +420,6 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                     "stream": False
                 }
                 try:
-                    # 🌟 CRITICAL FIX: timeout=None eliminates the 120s limit for local LM Studio pipelines
                     res = requests.post(url, json=payload, timeout=None)
                     if res.status_code == 200:
                         vlm_text = res.json().get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -447,18 +428,15 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                 except requests.exceptions.RequestException as req_err:
                     print(f"[VLM ERROR] Page {page_num}: Network error - {str(req_err)[:200]}")
             
-            # 🌟 Check cancellation after VLM response received
             if worker_thread and not worker_thread.is_running:
                 print(f"[VLM Reconstruct] Cancelled after VLM response for page {page_num}.")
                 break
             
-            # Strict verification block to intercept fake or dropped responses
             if not vlm_text or not vlm_text.strip() or len(vlm_text.strip()) < 15:
                 print(f"[CRITICAL ERROR] VLM layer execution returned blank on page {page_num}!")
                 print(" -> Hint: Verify if your active LM Studio model supports Vision features. Pure text models will drop images silently.")
                 continue
                 
-            # 🌟 Check cancellation before text splitting
             if worker_thread and not worker_thread.is_running:
                 print(f"[VLM Reconstruct] Cancelled before text splitting for page {page_num}.")
                 break
@@ -474,7 +452,7 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                         "type": "vlm_text",
                         "start_page": meta_start,
                         "end_page": meta_end,
-                        "local_img_path": img_path
+                        "local_img_path": os.path.relpath(img_path, BASE_PATH) if not os.path.isabs(img_path) else img_path
                     }
                 })
         except Exception as e:
