@@ -25,16 +25,31 @@ from indexer.indexer import build_vector_index
 from retriever.retriever import execute_rag_retrieval
 from model.llm import query_llm, get_local_models
 
-# 🌟 修改匯入：從 config.settings 引入 CHROMADB_DIR
+# 🌟 從 config.settings 引入 CHROMADB_DIR
 from config.settings import RAW_DATA_DIR, CHROMADB_DIR
 
 # 🌟 將 NOTES_FILE 的路徑直接指向 CHROMADB_DIR 內
 NOTES_FILE = os.path.join(CHROMADB_DIR, "database_notes.json")
 
 # =====================================================================
+# 2. 核心全域變數與多執行緒鎖宣告 (💡 最安全的位置)
+# =====================================================================
+
+# 確保結構完整，包含 ocr、vlm、query，且欄位一致
+TASK_STATUS = {
+    "ocr": {"running": False, "msg": "Idle", "success": True},
+    "vlm": {"running": False, "msg": "Idle", "success": True},
+    "query": {"running": False, "msg": "Idle", "success": True}
+}
+
+# 緊鄰全域變數宣告執行緒鎖
+status_lock = threading.Lock()
+
+# =====================================================================
 # FLASK APPLICATION SETUP & PRE-LOADING MODELS
 # =====================================================================
 
+# 💡 統一在這裡建立唯一的 app 實體
 app = Flask(__name__, template_folder="templates", static_folder="static")
 
 def preload_and_verify_weights():
@@ -110,16 +125,8 @@ werkzeug_log.addHandler(console_handler)
 app_logger.addHandler(console_handler)
 
 # =====================================================================
-# FLASK APPLICATION SETUP
+# TASK CANCELLATION ENGINE SETUP
 # =====================================================================
-
-app = Flask(__name__, template_folder="templates", static_folder="static")
-
-TASK_STATUS = {
-    "ocr": {"running": False, "msg": "Idle", "success": True},
-    "vlm": {"running": False, "msg": "Idle", "success": True},
-    "query": {"running": False, "msg": "Idle", "success": True},
-}
 
 class TaskCancellation:
     def __init__(self):
@@ -155,7 +162,8 @@ def background_ocr_worker(pdf_path, current_generated_id, start_page, end_page, 
         )
         
         if not cancel_token.is_running:
-            TASK_STATUS["ocr"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
+            with status_lock:  # 🌟 加鎖更新
+                TASK_STATUS["ocr"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
             return
             
         chunks = convert_pages_to_chunks(
@@ -166,9 +174,12 @@ def background_ocr_worker(pdf_path, current_generated_id, start_page, end_page, 
         )
         total_inserted = build_vector_index(chunks, current_generated_id)
         
-        TASK_STATUS["ocr"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
+        with status_lock:  # 🌟 正常完成時加鎖更新（已剔除原本上方未加鎖的重複賦值）
+            TASK_STATUS["ocr"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
+
     except Exception as err:
-        TASK_STATUS["ocr"] = {"running": False, "msg": str(err), "success": False}
+        with status_lock:  # 🌟 異常發生時加鎖更新
+            TASK_STATUS["ocr"] = {"running": False, "msg": str(err), "success": False}
 
 def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target_port, cancel_token):
     global TASK_STATUS
@@ -182,16 +193,20 @@ def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target
             worker_thread=cancel_token
         )
         if not cancel_token.is_running:
-            TASK_STATUS["vlm"] = {"running": False, "msg": "VLM processing cancelled by user.", "success": False}
+            with status_lock:  # 🌟 加鎖更新
+                TASK_STATUS["vlm"] = {"running": False, "msg": "VLM processing cancelled by user.", "success": False}
             return
         if not new_chunks:
-            TASK_STATUS["vlm"] = {"running": False, "msg": "No image source assets found or VLM response was blank.", "success": False}
+            with status_lock:  # 🌟 加鎖更新
+                TASK_STATUS["vlm"] = {"running": False, "msg": "No image source assets found or VLM response was blank.", "success": False}
             return
             
         total_inserted = build_vector_index(new_chunks, target_doc_id)
-        TASK_STATUS["vlm"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
+        with status_lock:  # 🌟 正常完成時加鎖更新
+            TASK_STATUS["vlm"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
     except Exception as err:
-        TASK_STATUS["vlm"] = {"running": False, "msg": str(err), "success": False}
+        with status_lock:  # 🌟 異常發生時加鎖更新
+            TASK_STATUS["vlm"] = {"running": False, "msg": str(err), "success": False}
 
 def background_query_worker(user_query, target_id, provider, model_name, api_key, target_ip, target_port, cancel_token):
     global TASK_STATUS
@@ -199,7 +214,8 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
         context = execute_rag_retrieval(user_query, target_id)
         
         if not cancel_token.is_running:
-            TASK_STATUS["query"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
+            with status_lock:  # 🌟 加鎖更新
+                TASK_STATUS["query"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
             return
             
         full_prompt = f"""你是一個專業的本地知識庫AI助手。請嚴格根據以下提供的【參考文本】來精準回答使用者的問題。
@@ -232,15 +248,17 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
             custom_ip=target_ip,
             custom_port=target_port
         )
-        TASK_STATUS["query"] = {
-            "running": False, 
-            "msg": "Generation completed successfully", 
-            "success": True,
-            "context": context,
-            "answer": answer
-        }
+        with status_lock:  # 🌟 正常完成時加鎖更新
+            TASK_STATUS["query"] = {
+                "running": False, 
+                "msg": "Generation completed successfully", 
+                "success": True,
+                "context": context,
+                "answer": answer
+            }
     except Exception as err:
-        TASK_STATUS["query"] = {"running": False, "msg": str(err), "success": False, "context": "Process terminated.", "answer": f"Task status: {err}"}
+        with status_lock:  # 🌟 異常發生時加鎖更新
+            TASK_STATUS["query"] = {"running": False, "msg": str(err), "success": False, "context": "Process terminated.", "answer": f"Task status: {err}"}
 
 # -------------------------------------------------------------------------
 # FLASK ROUTE CONTROLLERS
@@ -253,7 +271,6 @@ def index():
 @app.route("/api/get_models", methods=["POST"])
 def api_get_models():
     data = request.json or {}
-    # 將字串統一轉成小寫，避免因為空白或大小寫而無法識別
     provider = data.get("provider", "").lower().strip()
     ip = data.get("ip", "localhost").replace("http://", "").replace("https://", "").strip("/")
     port = data.get("port", "").strip()
@@ -289,15 +306,21 @@ def api_check_file():
 @app.route("/api/trigger_ocr", methods=["POST"])
 def api_trigger_ocr():
     global TASK_STATUS, ACTIVE_CANCELLATIONS
-    if TASK_STATUS["ocr"]["running"]:
-        return jsonify({"error": "OCR task is already running"}), 400
+    
+    # 🌟 修改：用 Lock 保護狀態檢查與更新
+    with status_lock:
+        if TASK_STATUS["ocr"]["running"]:
+            return jsonify({"error": "OCR task is already running"}), 400
+        TASK_STATUS["ocr"] = {"running": True, "msg": "Extracting contents...", "success": True}
         
     if 'file' not in request.files:
+        with status_lock:
+            TASK_STATUS["ocr"] = {"running": False, "msg": "No file provided", "success": False}
         return jsonify({"error": "No file provided"}), 400
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "No selected file"}), 400
         
+    # 🌟 核心修復：從 request.files 中正確取得 file 變數，避免 NameError 崩潰
+    file = request.files['file']
+    
     doc_id = request.form.get("doc_id", "")
     start_page = request.form.get("start_page", "")
     end_page = request.form.get("end_page", "")
@@ -309,7 +332,7 @@ def api_trigger_ocr():
     pdf_path = os.path.join(RAW_DATA_DIR, file.filename)
     file.save(pdf_path)
     
-    TASK_STATUS["ocr"] = {"running": True, "msg": "Extracting contents...", "success": True}
+    # 🌟 移除原本此處重複且未加鎖的 TASK_STATUS 設定
     ACTIVE_CANCELLATIONS["ocr"] = TaskCancellation()
     
     t = threading.Thread(
@@ -322,17 +345,20 @@ def api_trigger_ocr():
 @app.route("/api/trigger_vlm", methods=["POST"])
 def api_trigger_vlm():
     global TASK_STATUS, ACTIVE_CANCELLATIONS
-    if TASK_STATUS["vlm"]["running"]:
-        return jsonify({"error": "VLM task is already running"}), 400
+    
+    with status_lock:
+        if TASK_STATUS["vlm"]["running"]:
+            return jsonify({"error": "VLM task is already running"}), 400
+        TASK_STATUS["vlm"] = {"running": True, "msg": "Reconstructing layout via VLM...", "success": True}
         
     data = request.json or {}
+
     doc_id = data.get("doc_id", "")
     provider = data.get("provider", "")
     model_name = data.get("model_name", "")
     target_ip = data.get("ip", "localhost")
     target_port = data.get("port", "")
     
-    TASK_STATUS["vlm"] = {"running": True, "msg": "Reconstructing layout via VLM...", "success": True}
     ACTIVE_CANCELLATIONS["vlm"] = TaskCancellation()
     
     t = threading.Thread(
@@ -345,8 +371,11 @@ def api_trigger_vlm():
 @app.route("/api/trigger_query", methods=["POST"])
 def api_trigger_query():
     global TASK_STATUS, ACTIVE_CANCELLATIONS
-    if TASK_STATUS["query"]["running"]:
-        return jsonify({"error": "Query task is already running"}), 400
+
+    with status_lock:
+        if TASK_STATUS["query"]["running"]:
+            return jsonify({"error": "Query task is already running"}), 400
+        TASK_STATUS["query"] = {"running": True, "msg": "Retrieving database and generating answers...", "success": True}
         
     data = request.json or {}
     user_query = data.get("query", "")
@@ -358,9 +387,10 @@ def api_trigger_query():
     target_port = data.get("port", "11434")
     
     if not target_id:
+        with status_lock:
+            TASK_STATUS["query"] = {"running": False, "msg": "Invalid document ID provided.", "success": False}
         return jsonify({"error": "Invalid document ID provided."}), 400
         
-    TASK_STATUS["query"] = {"running": True, "msg": "Retrieving database and generating answers...", "success": True}
     ACTIVE_CANCELLATIONS["query"] = TaskCancellation()
     
     t = threading.Thread(
@@ -391,7 +421,6 @@ def api_task_status(task_type):
     current_msg = status_data.get("msg", "")
     current_status_str = f"{current_running}_{current_msg}"
     
-    # Checkpoint: Trigger logging ONLY when state or message has changed
     if _LAST_TRACKED_STATUS.get(task_type) != current_status_str:
         _LAST_TRACKED_STATUS[task_type] = current_status_str
         
@@ -401,7 +430,6 @@ def api_task_status(task_type):
             
         log_message = f"[{status_icon} Status Changed] Module: [{task_type.upper()}] | Running: {current_running} | Message: {current_msg}"
         
-        # Write to file and stream to console simultaneously via app_logger
         app_logger.info(log_message)
         
     return jsonify(status_data)
@@ -440,7 +468,6 @@ def api_inspect_chunks():
     except Exception as e:
         return jsonify({"error": f"Exception occurred during chunk parsing: {e}"}), 500
 
-# 修改原有的 @app.route("/api/list_databases") 路由，使其包含 metadata 中的 notes
 @app.route("/api/list_databases")
 def api_list_databases():
     try:
@@ -448,7 +475,6 @@ def api_list_databases():
         client = chromadb.PersistentClient(path=CHROMADB_DIR)
         collections = client.list_collections()
         
-        # 💡 先載入本地的備註 JSON 對照表
         notes_data = {}
         if os.path.exists(NOTES_FILE):
             try:
@@ -477,7 +503,6 @@ def api_list_databases():
                         
             clean_doc_id = col.name.replace("collection_", "")
             
-            # 💡 從本地 JSON 尋找備註，找不到則看有無舊快取的 metadata 保底，皆無則給空字串
             saved_notes = notes_data.get(clean_doc_id, "")
             if not saved_notes:
                 col_meta = col.metadata if col.metadata else {}
@@ -489,13 +514,12 @@ def api_list_databases():
                 "page_desc": page_desc,
                 "doc_id": clean_doc_id,
                 "total_chunks": total_chunks,
-                "notes": saved_notes  # 傳給前端動態渲染
+                "notes": saved_notes  
             })
         return jsonify({"databases": db_list})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-# 🌟 新增路由：供修改與保存備註欄位
 @app.route("/api/update_database_notes", methods=["POST"])
 def api_update_database_notes():
     data = request.json or {}
@@ -505,7 +529,6 @@ def api_update_database_notes():
         return jsonify({"error": "Missing target identifier"}), 400
         
     try:
-        # 讀取現有的備註 JSON 對照表
         notes_data = {}
         if os.path.exists(NOTES_FILE):
             try:
@@ -514,10 +537,8 @@ def api_update_database_notes():
             except Exception:
                 notes_data = {}
                 
-        # 更新該 doc_id 的備註內容
         notes_data[target_doc_id] = notes_content
         
-        # 寫回 JSON 檔案
         with open(NOTES_FILE, "w", encoding="utf-8") as f:
             json.dump(notes_data, f, ensure_ascii=False, indent=4)
             
