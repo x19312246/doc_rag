@@ -178,25 +178,25 @@ if embed_ready and rerank_ready:
 以下問題**尚未修復**，提出修改建議時請一併考量：
 
 ### P1｜模型物件每次查詢重建（效能）
-`retriever/retriever.py` 的 `execute_rag_retrieval()` 每次呼叫都重新 `new ChromaEmbeddingFunction()` 和 `get_reranker()`。應改為 module-level singleton，在 app 啟動時初始化一次。
+(6/10) `retriever/retriever.py` 的 `execute_rag_retrieval()` 每次呼叫都重新 `new ChromaEmbeddingFunction()` 和 `get_reranker()`。應改為 module-level singleton，在 app 啟動時初始化一次。
 
 ### P2｜TASK_STATUS 無鎖（競態條件）
-多個並發請求可能同時通過 `if TASK_STATUS["ocr"]["running"]` 的判斷。應加 `threading.Lock()` 保護 check-then-set 操作。
+(6/10) 多個並發請求可能同時通過 `if TASK_STATUS["ocr"]["running"]` 的判斷。應加 `threading.Lock()` 保護 check-then-set 操作。
 
 ### P3｜ChromaDB `add()` 未改為 `upsert()`
-`indexer/indexer.py` 使用 `collection.add()`，重複索引同一份 PDF 時會因 ID 衝突報錯或靜默失敗。應改為 `collection.upsert()`。
+(6/10) `indexer/indexer.py` 使用 `collection.add()`，重複索引同一份 PDF 時會因 ID 衝突報錯或靜默失敗。應改為 `collection.upsert()`。
 
 ### P4｜圖片絕對路徑存入 metadata
-`local_img_path` 存的是絕對路徑，跨機器部署會失效。應改存相對於 `BASE_PATH` 的相對路徑，讀取時再組合。
+(6/10) `local_img_path` 存的是絕對路徑，跨機器部署會失效。應改存相對於 `BASE_PATH` 的相對路徑，讀取時再組合。
 
 ### P5｜VLM 請求 `timeout=None`
-`indexer/ocr_loader.py` 對 Ollama/LM Studio 的 POST 請求設 `timeout=None`，服務當機時 worker thread 永久掛住。應設為可設定的上限（建議 600s）。
+(6/10) `indexer/ocr_loader.py` 對 Ollama/LM Studio 的 POST 請求設 `timeout=None`，服務當機時 worker thread 永久掛住。應設為可設定的上限（建議 600s）。
 
 ### P6｜Flask `debug=True`
-`app_flask.py` 以 `debug=True` 啟動，Werkzeug reloader 會產生兩個 process，造成 `TASK_STATUS` 有兩份副本。應改為環境變數控制。
+(6/10) `app_flask.py` 以 `debug=True` 啟動，Werkzeug reloader 會產生兩個 process，造成 `TASK_STATUS` 有兩份副本。應改為環境變數控制。
 
 ### Backlog｜缺乏 Storage 抽象層
-`chromadb` 直接散落在四個模組中，難以替換後端。長期應抽出 `VectorStore` 介面。
+(PPD：會改爛程式)`chromadb` 直接散落在四個模組中，難以替換後端。長期應抽出 `VectorStore` 介面。
 
 ---
 
