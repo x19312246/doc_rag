@@ -667,17 +667,14 @@ def api_delete_database():
         return jsonify({"success": True})
     except Exception as e:
         return jsonify({"error": f"Deletion failed: {e}"}), 400
-
-if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
-
+    
 @app.route("/api/import_database", methods=["POST"])
 def api_import_database():
     if 'file' not in request.files:
         return jsonify({"error": "缺少上傳檔案"}), 400
         
     file = request.files['file']
-    conflict_strategy = request.form.get("strategy", "skip") # "skip", "overwrite", "rename"
+    conflict_strategy = request.form.get("strategy", "skip")
     
     if file.filename == '':
         return jsonify({"error": "未選擇檔案"}), 400
@@ -685,8 +682,12 @@ def api_import_database():
     if not file.filename.endswith('.zip'):
         return jsonify({"error": "僅支援 .zip 壓縮包"}), 400
 
-    # 建立臨時目錄解壓縮
-    with tempfile.TemporaryDirectory() as tmpdir:
+    # 🌟 改為手動建立臨時目錄，以便我們有完整的控制權
+    tmpdir = tempfile.mkdtemp()
+    success_flag = False
+    error_msg = None
+
+    try:
         zip_path = os.path.join(tmpdir, "upload.zip")
         file.save(zip_path)
         
@@ -696,24 +697,45 @@ def api_import_database():
         except Exception:
             return jsonify({"error": "ZIP 檔案解壓縮失敗，請檢查格式是否正確"}), 400
             
-        # 尋找解壓後目錄中是否含有 chromadb_storage 夾
-        # 支援直接壓縮資料夾內容，或者把整個資料夾壓縮進去的情況
         extracted_chroma_path = os.path.join(tmpdir, "chromadb_storage")
         if not os.path.exists(extracted_chroma_path):
-            # 如果使用者是把資料夾內的 index 等檔案直接壓成一個 zip，那 tmpdir 本身就是庫路徑
             if os.path.exists(os.path.join(tmpdir, "chroma.sqlite3")):
                 extracted_chroma_path = tmpdir
             else:
-                return jsonify({"error": "壓縮包內查無合法的 chromadb_storage 結構（需包含 chroma.sqlite3）"}), 400
+                return jsonify({"error": "壓縮包內查無合法的 chromadb_storage 結構"}), 400
         
-        try:
-            merge_chroma_and_notes(
-                fork_chroma_dir=extracted_chroma_path,
-                main_chroma_dir=CHROMADB_DIR,
-                conflict_strategy=conflict_strategy
-            )
-            return jsonify({"success": True, "msg": "外部資料庫與備註合併成功！"})
-        except ValueError as ve:
-            return jsonify({"error": str(ve)}), 400
-        except Exception as e:
-            return jsonify({"error": f"合併過程中發生未知錯誤: {str(e)}"}), 500
+        # 執行合併
+        merge_chroma_and_notes(
+            fork_chroma_dir=extracted_chroma_path,
+            main_chroma_dir=CHROMADB_DIR,
+            conflict_strategy=conflict_strategy
+        )
+        success_flag = True
+
+    except ValueError as ve:
+        error_msg = str(ve)
+    except Exception as e:
+        error_msg = f"合併過程中發生未知錯誤: {str(e)}"
+    finally:
+        # 🌟 安全清理區塊：給 Windows 一點時間釋放控制權，並嘗試多次刪除
+        import time
+        time.sleep(0.5)  # 緩衝半秒，確保 SQLite 完全寫入並關閉
+        
+        for i in range(3):  # 最多重試 3 次
+            try:
+                shutil.rmtree(tmpdir)
+                break
+            except PermissionError:
+                time.sleep(0.5)  # 如果還被鎖定，再等半秒
+            except Exception:
+                break
+
+    # 根據執行結果回傳 Response
+    if success_flag:
+        return jsonify({"success": True, "msg": "外部資料庫與備註合併成功！"})
+    else:
+        return jsonify({"error": error_msg}), 400 if "維度不符" in str(error_msg) else 500
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000, debug=True)
+
