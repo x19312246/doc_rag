@@ -7,6 +7,9 @@ import time
 from logging.handlers import TimedRotatingFileHandler
 from flask import Flask, render_template, request, jsonify
 import json
+import zipfile
+import tempfile
+import shutil
 
 import config.settings  
 
@@ -260,6 +263,114 @@ def background_query_worker(user_query, target_id, provider, model_name, api_key
     except Exception as err:
         with status_lock:  
             TASK_STATUS["query"] = {"running": False, "msg": str(err), "success": False, "context": "Process terminated.", "answer": f"Task status: {err}"}
+
+# ----------------------------------------------------------------- 
+# 合併chromadb所需程式
+# ---------------------------------------------------------------------
+
+def merge_chroma_and_notes(fork_chroma_dir, main_chroma_dir, conflict_strategy="skip"):
+    """
+    將外部解壓後的 ChromaDB 與 database_notes.json 合併至目前的系統中
+    """
+    import chromadb
+    from model.embeddings import embedding_instance
+    
+    src_client = chromadb.PersistentClient(path=fork_chroma_dir)
+    dst_client = chromadb.PersistentClient(path=main_chroma_dir)
+    
+    # 讀取現有的備註與來源備註
+    src_notes_path = os.path.join(fork_chroma_dir, "database_notes.json")
+    dst_notes_path = os.path.join(main_chroma_dir, "database_notes.json")
+    
+    src_notes = {}
+    if os.path.exists(src_notes_path):
+        try:
+            with open(src_notes_path, "r", encoding="utf-8") as f:
+                src_notes = json.load(f)
+        except Exception:
+            pass
+
+    dst_notes = {}
+    if os.path.exists(dst_notes_path):
+        try:
+            with open(dst_notes_path, "r", encoding="utf-8") as f:
+                dst_notes = json.load(f)
+        except Exception:
+            pass
+
+    # 獲取目前系統中已有的集合
+    existing_collections = [c.name for c in dst_client.list_collections()]
+
+    for col_info in src_client.list_collections():
+        col_name = col_info.name
+        
+        # 提取 doc_id (格式為 collection_{doc_id})
+        doc_id = col_name.replace("collection_", "")
+        
+        src_col = src_client.get_collection(col_name, embedding_function=embedding_instance)
+        src_data = src_col.get(include=["documents", "metadatas", "embeddings"])
+        
+        if not src_data["ids"]:
+            continue
+
+        # --- 情境三：檢查向量模型維度 ---
+        # 由於兩邊都使用同一套系統程式，此處做保險比對：
+        if src_data["embeddings"] is not None and len(src_data["embeddings"]) > 0:
+            src_dim = len(src_data["embeddings"][0])
+            if col_name in existing_collections:
+                try:
+                    dst_col_test = dst_client.get_collection(col_name, embedding_function=embedding_instance)
+                    dst_data_test = dst_col_test.get(include=["embeddings"], limit=1)
+                    if dst_data_test["embeddings"] and len(dst_data_test["embeddings"][0]) != src_dim:
+                        raise ValueError(f"集合 {col_name} 的向量維度不符（{src_dim} vs {len(dst_data_test['embeddings'][0])}），拒絕合併。")
+                except Exception as e:
+                    if "does not exist" not in str(e):
+                        raise e
+
+        # --- 情境一 & 二：處理名稱與衝突策略 ---
+        target_col_name = col_name
+        target_doc_id = doc_id
+        action = "insert"  # "insert" 或 "skip"
+
+        if col_name in existing_collections:
+            if conflict_strategy == "skip":
+                action = "skip"
+            elif conflict_strategy == "overwrite":
+                dst_client.delete_collection(col_name)
+                action = "insert"
+            elif conflict_strategy == "rename":
+                target_doc_id = f"{doc_id}_fork"
+                target_col_name = f"collection_{target_doc_id}"
+                action = "insert"
+
+        # --- 執行 ChromaDB 資料寫入 ---
+        if action == "insert":
+            dst_col = dst_client.get_or_create_collection(
+                name=target_col_name,
+                embedding_function=embedding_instance,
+                metadata={"hnsw:space": "cosine"}
+            )
+            # 使用 upsert 確保大量 ID 寫入時不會因重複而報錯
+            dst_col.upsert(
+                ids=src_data["ids"],
+                documents=src_data["documents"],
+                metadatas=src_data["metadatas"],
+                embeddings=src_data["embeddings"]
+            )
+            
+            # --- 處理 database_notes.json 備註合併 ---
+            if doc_id in src_notes:
+                if conflict_strategy == "skip" and col_name in existing_collections:
+                    pass  # 跳過就不動備註
+                elif conflict_strategy == "overwrite" or col_name not in existing_collections:
+                    dst_notes[target_doc_id] = src_notes[doc_id]
+                elif conflict_strategy == "rename":
+                    # 改名情境：新舊備註並存
+                    dst_notes[target_doc_id] = f"[來自匯入] {src_notes[doc_id]}"
+
+    # 將最終合併後的備註寫回主資料庫
+    with open(dst_notes_path, "w", encoding="utf-8") as f:
+        json.dump(dst_notes, f, ensure_ascii=False, indent=4)
 
 # -------------------------------------------------------------------------
 # FLASK ROUTE CONTROLLERS
@@ -559,3 +670,50 @@ def api_delete_database():
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=True)
+
+@app.route("/api/import_database", methods=["POST"])
+def api_import_database():
+    if 'file' not in request.files:
+        return jsonify({"error": "缺少上傳檔案"}), 400
+        
+    file = request.files['file']
+    conflict_strategy = request.form.get("strategy", "skip") # "skip", "overwrite", "rename"
+    
+    if file.filename == '':
+        return jsonify({"error": "未選擇檔案"}), 400
+        
+    if not file.filename.endswith('.zip'):
+        return jsonify({"error": "僅支援 .zip 壓縮包"}), 400
+
+    # 建立臨時目錄解壓縮
+    with tempfile.TemporaryDirectory() as tmpdir:
+        zip_path = os.path.join(tmpdir, "upload.zip")
+        file.save(zip_path)
+        
+        try:
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(tmpdir)
+        except Exception:
+            return jsonify({"error": "ZIP 檔案解壓縮失敗，請檢查格式是否正確"}), 400
+            
+        # 尋找解壓後目錄中是否含有 chromadb_storage 夾
+        # 支援直接壓縮資料夾內容，或者把整個資料夾壓縮進去的情況
+        extracted_chroma_path = os.path.join(tmpdir, "chromadb_storage")
+        if not os.path.exists(extracted_chroma_path):
+            # 如果使用者是把資料夾內的 index 等檔案直接壓成一個 zip，那 tmpdir 本身就是庫路徑
+            if os.path.exists(os.path.join(tmpdir, "chroma.sqlite3")):
+                extracted_chroma_path = tmpdir
+            else:
+                return jsonify({"error": "壓縮包內查無合法的 chromadb_storage 結構（需包含 chroma.sqlite3）"}), 400
+        
+        try:
+            merge_chroma_and_notes(
+                fork_chroma_dir=extracted_chroma_path,
+                main_chroma_dir=CHROMADB_DIR,
+                conflict_strategy=conflict_strategy
+            )
+            return jsonify({"success": True, "msg": "外部資料庫與備註合併成功！"})
+        except ValueError as ve:
+            return jsonify({"error": str(ve)}), 400
+        except Exception as e:
+            return jsonify({"error": f"合併過程中發生未知錯誤: {str(e)}"}), 500

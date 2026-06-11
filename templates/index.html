@@ -203,6 +203,33 @@
         <div style="text-align: right; margin-top:15px;">
             <button class="btn btn-red" onclick="deleteSelectedCache()">🗑️ 徹底刪除選定之歷史快取</button>
         </div>
+
+        <div style="margin-top: 25px; padding: 15px; border: 1px dashed #cbd5e1; border-radius: 6px; background-color: #f8fafc;">
+            <h4 style="margin-top: 0; color: #334155;">📥 匯入與合併外部向量庫</h4>
+            <p style="font-size: 13px; color: #64748b; margin-bottom: 10px;">
+                您可以將另一台電腦的 <code>chromadb_storage</code> 資料夾壓縮為 <strong>.zip</strong> 檔上傳。系統會自動解析並合併向量庫與備註。
+            </p>
+
+            <div class="form-group" style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
+                <div>
+                    <label style="display:inline; font-weight:normal;">選擇 ZIP 壓縮包：</label>
+                    <input type="file" id="import_zip_file" accept=".zip" />
+                </div>
+
+                <div>
+                    <label style="display:inline; font-weight:normal;">衝突處理策略：</label>
+                    <select id="import_strategy" style="padding: 4px 8px; border-radius: 4px; border: 1px solid #cbd5e1;">
+                        <option value="skip">跳過 (保留本機資料庫)</option>
+                        <option value="overwrite">覆蓋 (完全取代本機資料庫與備註)</option>
+                        <option value="rename">自動改名 (附加 _fork 保留兩者)</option>
+                    </select>
+                </div>
+
+                <button type="button" onclick="uploadAndMergeDatabase()" style="background-color: #0284c7; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold;">
+                    開始匯入合併
+                </button>
+            </div>
+        </div>        
     </div>
 </div>
 
@@ -599,6 +626,64 @@
         });
         document.addEventListener('mouseup', () => { isDragging = false; document.body.style.cursor = 'default'; });
     }
+    function uploadAndMergeDatabase() {
+        const fileInput = document.getElementById('import_zip_file');
+        const strategySelect = document.getElementById('import_strategy');
+        
+        if (!fileInput.files || fileInput.files.length === 0) {
+            return alert("請先選取要上傳的 .zip 向量庫壓縮檔案。");
+        }
+        
+        const file = fileInput.files[0];
+        const strategy = strategySelect.value;
+        
+        let strategyText = "跳過衝突";
+        if(strategy === "overwrite") strategyText = "完全覆蓋本機資料";
+        if(strategy === "rename") strategyText = "自動重命名保留兩者";
+        
+        if (!confirm(`確認要開始匯入嗎？\n檔案：${file.name}\n策略：${strategyText}`)) {
+            return;
+        }
+        
+        // 建立 FormData 物件傳送檔案與引數
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('strategy', strategy);
+        
+        // 顯示載入中提示
+        const btn = event.target;
+        const originalText = btn.innerText;
+        btn.disabled = true;
+        btn.innerText = "處理合併中，請稍候...";
+        
+        fetch('/api/import_database', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => response.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerText = originalText;
+            
+            if (data.success) {
+                alert(data.msg || "資料庫合併成功！");
+                fileInput.value = ""; // 清空選取檔案
+                // 呼叫您現有的刷新表格函數（對照您原碼中叫 refreshDatabases）
+                if (typeof refreshDatabases === 'function') {
+                    refreshDatabases();
+                }
+            } else {
+                alert("匯入失敗：" + (data.error || "未知錯誤"));
+            }
+        })
+        .catch(error => {
+            btn.disabled = false;
+            btn.innerText = originalText;
+            console.error("Error:", error);
+            alert("網路請求發生錯誤，請查看控制台日誌。");
+        });
+    }
+
 </script>
 
 </body>
