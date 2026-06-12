@@ -398,21 +398,36 @@ def api_get_models():
 @app.route("/api/check_file", methods=["POST"])
 def api_check_file():
     import chromadb
+    import uuid  # 引入 uuid 模組來產生絕對不重複的識別碼
+    
     file_name = request.json.get("file_name", "")
     if not file_name:
         return jsonify({"error": "Invalid file name"}), 400
         
     file_base_name = os.path.splitext(file_name)[0]
+    
+    # 1. 先計算標準的 MD5 識別碼
     base_doc_id = hashlib.md5(file_base_name.encode('utf-8')).hexdigest()
     
     db_client = chromadb.PersistentClient(path=CHROMADB_DIR)
     existing_collections = [c.name for c in db_client.list_collections()]
     target_collection_name = f"collection_{base_doc_id}"
     
+    # 2. 檢查資料庫是否已經存在此識別碼
     is_duplicate = target_collection_name in existing_collections
+    
+    # 3. 如果重複了，我們就重新產生一個附加隨機 UUID 的全新識別碼，確保絕對不相撞
+    if is_duplicate:
+        # 使用部分 uuid 加上原本的 md5 前綴，或直接使用 uuid，這裡採 md5 混雜 uuid 的作法
+        # 這樣既能保持長度一致，又能確保絕對不重複
+        salt = uuid.uuid4().hex[:8]  # 取 8 碼隨機值
+        unique_seed = f"{file_base_name}_{salt}"
+        base_doc_id = hashlib.md5(unique_seed.encode('utf-8')).hexdigest()
+    
+    # 回傳給前端。此時的 base_doc_id 已經是過濾後「保證在資料庫中不存在」的新識別碼
     return jsonify({
         "base_doc_id": base_doc_id,
-        "is_duplicate": is_duplicate
+        "is_duplicate": is_duplicate  # 仍保留通知前端「這原本是重複的檔案」
     })
 
 @app.route("/api/trigger_ocr", methods=["POST"])
