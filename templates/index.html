@@ -128,6 +128,14 @@
         <div id="dynamic_param_widget" style="background:#f1f5f9; padding:15px; border-radius:4px; margin-bottom:15px;"></div>
 
         <div class="form-group">
+            <label for="sel_qa_process_type">🎯 選擇檢索快取來源:</label>
+            <select id="sel_qa_process_type" style="width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #cbd5e1; background-color: white;">
+                <option value="vlm" selected>VLM 視覺版面優化快取 (高精度排版)</option>
+                <option value="ocr">RAG 基礎純文字快取 (快速 OCR)</option>
+            </select>
+        </div>
+                
+        <div class="form-group">
             <label>請輸入您想查詢的問題:</label>
             <input type="text" id="ent_query">
         </div>
@@ -347,9 +355,13 @@
         }
         if(tabId === 'manager-tab') refreshDatabases();
         
+        // 進入 Q&A 頁面時自動帶入快取 ID，預設加上 _ocr字樣，使用者可自行改成 _vlm 進行高精度檢索
         if(tabId === 'qa-tab' && document.getElementById('ent_doc_id').value) {
-            document.getElementById('ent_qa_doc_id').value = document.getElementById('ent_doc_id').value;
+            document.getElementById('ent_qa_doc_id').value = document.getElementById('ent_doc_id').value + "_ocr";
             onQaProviderChanged();
+        }
+        if(tabId === 'inspect-tab' && document.getElementById('ent_doc_id').value) {
+            document.getElementById('ent_inspect_id').value = document.getElementById('ent_doc_id').value + "_ocr";
         }
     }
 
@@ -373,16 +385,13 @@
         requestUpdatedDocId("ocr");
     }
 
-    function requestUpdatedDocId(forcedProcessType) {
+    function requestUpdatedDocId() {
         let fileInput = document.getElementById('pdf_file');
         if(!fileInput || !fileInput.files.length) return;
         
         let filename = fileInput.files[0].name;
         let startPage = document.getElementById('ent_start_page').value.trim();
         let endPage = document.getElementById('ent_end_page').value.trim();
-        
-        // 根據傳入參數決定製程類型，預設為 "ocr"
-        let processType = forcedProcessType || "ocr";
 
         fetch('/api/check_file', {
             method: 'POST',
@@ -390,30 +399,30 @@
             body: JSON.stringify({
                 file_name: filename,
                 start_page: startPage,
-                end_page: endPage,
-                process_type: processType  // <-- 關鍵修正：將製程傳給後端以計算專屬 MD5
+                end_page: endPage
             })
         }).then(r => r.json()).then(data => {
             global_base_id = data.base_doc_id;
             
             let msgEl = document.getElementById('lbl_id_msg');
             let radioBlock = document.getElementById('radio_block');
+            
             if(data.is_duplicate) {
-                msgEl.innerText = `🔎 偵測到重複文件段落：此範圍過去已建立過 [${processType.toUpperCase()}] 快取索引！`;
+                let statusText = [];
+                if(data.has_ocr) statusText.push("[RAG基礎文字]");
+                if(data.has_vlm) statusText.push("[VLM視覺優化]");
+                
+                msgEl.innerText = `🔎 偵測到重複文件段落：此範圍已存在 ${statusText.join('與')} 快取索引！`;
                 msgEl.style.color = "#b45309";
                 radioBlock.style.display = "block";
             } else {
-                msgEl.innerText = `✨ 偵測到新文件段落：系統已依頁碼與製程分派唯一識別碼。`;
+                msgEl.innerText = "✨ 偵測到新文件段落：系統已自動依頁碼分派唯一識別碼。";
                 msgEl.style.color = "#1d4ed8";
                 radioBlock.style.display = "none";
                 document.getElementById('radio_keep').checked = true;
             }
             toggleStrategy();
-            
-            // 只有在 VLM 配置區塊可見時才刷新 VLM 模型清單
-            if (processType === "vlm") {
-                onT1ProviderChanged(); 
-            }
+            onT1ProviderChanged(); 
         }).catch(err => {
             console.error("Failed to sync structural document hash context identifier:", err);
         });
@@ -467,51 +476,39 @@
         let fileInput = document.getElementById('pdf_file');
         if(!fileInput.files.length) return alert("請先選取檔案");
 
-        // 1. 強制切換並重新計算 OCR 專屬的 doc_id
-        requestUpdatedDocId("ocr");
-        
-        // 稍微延遲確保 input 欄位內的值已更新 (或直接抓取 global_base_id)
-        setTimeout(() => {
-            let formData = new FormData();
-            formData.append('file', fileInput.files[0]);
-            formData.append('doc_id', document.getElementById('ent_doc_id').value);
-            formData.append('start_page', document.getElementById('ent_start_page').value);
-            formData.append('end_page', document.getElementById('ent_end_page').value);
+        let formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        formData.append('doc_id', document.getElementById('ent_doc_id').value); // 丟入純淨 ID
+        formData.append('start_page', document.getElementById('ent_start_page').value);
+        formData.append('end_page', document.getElementById('ent_end_page').value);
 
-            document.getElementById('btn_run_ocr').disabled = true;
-            document.getElementById('btn_stop_ocr').disabled = false;
-            document.getElementById('progress_ocr').style.display = 'block';
+        document.getElementById('btn_run_ocr').disabled = true;
+        document.getElementById('btn_stop_ocr').disabled = false;
+        document.getElementById('progress_ocr').style.display = 'block';
 
-            fetch('/api/trigger_ocr', { method: 'POST', body: formData })
-            .then(() => pollStatus('ocr'));
-        }, 100);
+        fetch('/api/trigger_ocr', { method: 'POST', body: formData })
+        .then(() => pollStatus('ocr'));
     }
 
     function triggerVlm() {
         let fileInput = document.getElementById('pdf_file');
         if(!fileInput.files.length) return alert("請先選取檔案");
 
-        // 1. 強制切換並重新計算 VLM 專屬的 doc_id
-        requestUpdatedDocId("vlm");
+        document.getElementById('btn_run_ocr').disabled = true;
+        document.getElementById('btn_stop_ocr').disabled = false;
+        document.getElementById('progress_ocr').style.display = 'block';
 
-        // 稍微延遲確保 input 欄位內的值已更新
-        setTimeout(() => {
-            document.getElementById('btn_run_ocr').disabled = true;
-            document.getElementById('btn_stop_ocr').disabled = false;
-            document.getElementById('progress_ocr').style.display = 'block';
-
-            fetch('/api/trigger_vlm', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    doc_id: document.getElementById('ent_doc_id').value, // 這裏拿到的會是帶有 _vlm 識別的 ID
-                    provider: document.getElementById('t1_vlm_provider_combo').value,
-                    model_name: document.getElementById('t1_vlm_model_edit').value,
-                    ip: document.getElementById('t1_vlm_ip_edit').value,
-                    port: document.getElementById('t1_vlm_port_edit').value
-                })
-            }).then(() => pollStatus('vlm'));
-        }, 100);
+        fetch('/api/trigger_vlm', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                doc_id: document.getElementById('ent_doc_id').value, // 丟入純淨 ID，後端 VLM 就能順利開起圖片目錄！
+                provider: document.getElementById('t1_vlm_provider_combo').value,
+                model_name: document.getElementById('t1_vlm_model_edit').value,
+                ip: document.getElementById('t1_vlm_ip_edit').value,
+                port: document.getElementById('t1_vlm_port_edit').value
+            })
+        }).then(() => pollStatus('vlm'));
     }
 
     function cancelTask(type) {
@@ -582,46 +579,58 @@
     }
 
     function triggerQuery() {
-        document.getElementById('btn_send_query').disabled = true;
-        document.getElementById('btn_stop_query').disabled = false;
-        document.getElementById('progress_query').style.display = 'block';
+    document.getElementById('btn_send_query').disabled = true;
+    document.getElementById('btn_stop_query').disabled = false;
+    document.getElementById('progress_query').style.display = 'block';
 
-        let p = document.getElementById('cbo_provider').value;
-        let reqPayload = {
-            query: document.getElementById('ent_query').value,
-            doc_id: document.getElementById('ent_qa_doc_id').value,
-            provider: p
-        };
-        
-        if(p === 'groq') {
-            reqPayload.model_name = document.getElementById('ent_groq_model').value;
-            reqPayload.api_key = document.getElementById('ent_groq_key').value;
-        } else {
-            reqPayload.model_name = document.getElementById('cbo_models').value;
-            reqPayload.ip = document.getElementById('ent_qa_ip').value;
-            reqPayload.port = document.getElementById('ent_qa_port').value;
-        }
+    let p = document.getElementById('cbo_provider').value;
+    let queryText = document.getElementById('ent_query').value;
+    let docId = document.getElementById('ent_qa_doc_id').value;
 
-        fetch('/api/trigger_query', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(reqPayload)
-        }).then(() => {
-            let interval = setInterval(() => {
-                fetch('/api/task_status/query')
-                .then(r => r.json()).then(status => {
-                    if(!status.running) {
-                        clearInterval(interval);
-                        document.getElementById('btn_send_query').disabled = false;
-                        document.getElementById('btn_stop_query').disabled = true;
-                        document.getElementById('progress_query').style.display = 'none';
-                        document.getElementById('txt_context').value = status.context || "";
-                        document.getElementById('txt_answer').value = status.answer || "";
-                    }
-                });
-            }, 1000);
-        });
+    // 自動偵測 UI 是否有快取類型選擇器 (例如：名為 sel_qa_process_type 的 select 或 radio)
+    // 如果沒有，預設查詢 "vlm" (因為通常 RAG 完會進 VLM 修復，檢索 VLM 的排版最精準)
+    let selectedProcessType = "vlm"; 
+    let typeUi = document.getElementById('sel_qa_process_type');
+    if (typeUi) {
+        selectedProcessType = typeUi.value.trim().lower();
     }
+
+    let reqPayload = {
+        query: queryText,
+        doc_id: docId,                     // 傳入純淨的 base_doc_id
+        process_type: selectedProcessType, // 關鍵修正：告知後端要檢索哪一種快取後綴 (_ocr 或 _vlm)
+        provider: p
+    };
+    
+    if(p === 'groq') {
+        reqPayload.model_name = document.getElementById('ent_groq_model').value;
+        reqPayload.api_key = document.getElementById('ent_groq_key').value;
+    } else {
+        reqPayload.model_name = document.getElementById('cbo_models').value;
+        reqPayload.ip = document.getElementById('ent_qa_ip').value;
+        reqPayload.port = document.getElementById('ent_qa_port').value;
+    }
+
+    fetch('/api/trigger_query', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(reqPayload)
+    }).then(() => {
+        let interval = setInterval(() => {
+            fetch('/api/task_status/query')
+            .then(r => r.json()).then(status => {
+                if(!status.running) {
+                    clearInterval(interval);
+                    document.getElementById('btn_send_query').disabled = false;
+                    document.getElementById('btn_stop_query').disabled = true;
+                    document.getElementById('progress_query').style.display = 'none';
+                    document.getElementById('txt_context').value = status.context || "";
+                    document.getElementById('txt_answer').value = status.answer || "";
+                }
+            });
+        }, 1000);
+    });
+}
 
     function loadInspectChunks() {
         let tid = document.getElementById('ent_inspect_id').value;

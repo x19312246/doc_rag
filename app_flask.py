@@ -144,50 +144,71 @@ ACTIVE_CANCELLATIONS = {
 # BACKGROUND WORKER FUNCTIONS
 # -------------------------------------------------------------------------
 
-def background_ocr_worker(pdf_path, current_generated_id, start_page, end_page, cancel_token):
-    global TASK_STATUS
+def background_ocr_worker(file_path, current_generated_id, start_page, end_page, *args, **kwargs):
+    global TASK_STATUS, ACTIVE_CANCELLATIONS
+    cancel_token = ACTIVE_CANCELLATIONS["ocr"]
+    
     try:
-        file_name = os.path.basename(pdf_path)
-        file_base_name = os.path.splitext(file_name)[0]
-        
-        save_path = os.path.join(RAW_DATA_DIR, file_name)
-        if pdf_path != save_path and os.path.exists(pdf_path):
-            with open(pdf_path, "rb") as f_in, open(save_path, "wb") as f_out:
-                f_out.write(f_in.read())
-                
-        pages_info = extract_pdf_pages_info(
-            save_path, 
-            dpi=200, 
-            start_page=start_page, 
-            end_page=end_page,
-            worker_thread=cancel_token  
-        )
-        
-        if not cancel_token.is_running:
-            with status_lock:  
-                TASK_STATUS["ocr"] = {"running": False, "msg": "Task cancelled by user.", "success": False}
-            return
+        with status_lock:
+            TASK_STATUS["ocr"]["step"] = "Executing primary PDF structural layout extraction pipeline..."
             
-        chunks = convert_pages_to_chunks(
-            pages_info, 
-            source_name=file_base_name,
-            start_page=start_page,
-            end_page=end_page
-        )
-        total_inserted = build_vector_index(chunks, current_generated_id)
+        # 1. Trigger the original extractor (generates images into the global folder)
+        pages_info = extract_pdf_pages_info(file_path, start_page=start_page, end_page=end_page)
         
-        with status_lock:  
-            TASK_STATUS["ocr"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
+        if cancel_token.is_set():
+            return
 
-    except Exception as err:
-        with status_lock:  
-            TASK_STATUS["ocr"] = {"running": False, "msg": str(err), "success": False}
+        with status_lock:
+            TASK_STATUS["ocr"]["step"] = "Synchronizing physical image assets with unique identity hash scope..."
+
+        # 2. Define and create the unique identifier directory for VLM phase compatibility
+        vlm_target_dir = os.path.join(RAW_DATA_DIR, current_generated_id)
+        os.makedirs(vlm_target_dir, exist_ok=True)
+        
+        # 3. Scan the default global export directory and copy assets to the isolated session directory
+        default_out_images = os.path.join("data", "processed", "out_images")
+        
+        if os.path.exists(default_out_images):
+            for file_name in os.listdir(default_out_images):
+                if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
+                    src_file = os.path.join(default_out_images, file_name)
+                    dst_file = os.path.join(vlm_target_dir, file_name)
+                    shutil.copy2(src_file, dst_file)
+
+        if cancel_token.is_set():
+            return
+
+        with status_lock:
+            TASK_STATUS["ocr"]["step"] = "Transforming localized structural tokens into vector embedding chunks..."
+            
+        chunks = convert_pages_to_chunks(pages_info)
+        
+        if cancel_token.is_set():
+            return
+
+        with status_lock:
+            TASK_STATUS["ocr"]["step"] = "Committing base text layers into isolated ChromaDB OCR collection..."
+            
+        # 4. Build isolated vector index with explicit workflow suffix
+        total_inserted = build_vector_index(chunks, f"{current_generated_id}_ocr")
+        
+        with status_lock:
+            TASK_STATUS["ocr"]["running"] = False
+            TASK_STATUS["ocr"]["step"] = "Completed successfully"
+            TASK_STATUS["ocr"]["progress"] = 100
+            TASK_STATUS["ocr"]["chunks"] = total_inserted
+            
+    except Exception as e:
+        with status_lock:
+            TASK_STATUS["ocr"]["running"] = False
+            TASK_STATUS["ocr"]["step"] = f"Error: {str(e)}"
+            TASK_STATUS["ocr"]["progress"] = 0
 
 def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target_port, cancel_token):
     global TASK_STATUS
     try:
         new_chunks = reconstruct_pages_via_vlm(
-            target_doc_id,
+            target_doc_id, # 保持原始 ID
             provider,
             model_name,
             target_ip,
@@ -203,7 +224,7 @@ def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target
                 TASK_STATUS["vlm"] = {"running": False, "msg": "No image source assets found or VLM response was blank.", "success": False}
             return
             
-        total_inserted = build_vector_index(new_chunks, target_doc_id)
+        total_inserted = build_vector_index(new_chunks, f"{target_doc_id}_vlm")
         with status_lock:  
             TASK_STATUS["vlm"] = {"running": False, "msg": f"Success! Written {total_inserted} chunk blocks.", "success": True}
     except Exception as err:
@@ -287,41 +308,31 @@ def api_get_models():
 @app.route("/api/check_file", methods=["POST"])
 def api_check_file():
     import chromadb
-    
     data = request.json or {}
     file_name = data.get("file_name", "")
-    
-    # 接收前端傳入的特定批次頁碼範圍
     start_page = str(data.get("start_page", "")).strip()
     end_page = str(data.get("end_page", "")).strip()
-    
-    # 新增：接收前端傳入的製程類型 (例如: 'ocr' 或 'vlm')，預設為 'ocr' 以確保向下相容
-    process_type = str(data.get("process_type", "ocr")).strip().lower()
     
     if not file_name:
         return jsonify({"error": "Invalid file name"}), 400
         
     file_base_name = os.path.splitext(file_name)[0]
-    
-    # 1. 建立包含製程後綴的特徵種子（特徵字串）
-    # 範例："蔡經緯-經濟學大意_1_50_ocr" 或 "蔡經緯-經濟學大意_1_50_vlm"
-    unique_seed = f"{file_base_name}_{start_page}_{end_page}_{process_type}"
-    
-    # 2. 根據此特徵字串計算出專屬於該資料段與該製程的唯一 MD5 識別碼
+    unique_seed = f"{file_base_name}_{start_page}_{end_page}"
     base_doc_id = hashlib.md5(unique_seed.encode('utf-8')).hexdigest()
     
     db_client = chromadb.PersistentClient(path=CHROMADB_DIR)
     existing_collections = [c.name for c in db_client.list_collections()]
-    target_collection_name = f"collection_{base_doc_id}"
     
-    # 3. 檢查向量資料庫中是否已經存在此特定區段與製程組合的集合
-    is_duplicate = target_collection_name in existing_collections
+    # 同時檢查 OCR 版與 VLM 版是否存在
+    has_ocr = f"collection_{base_doc_id}_ocr" in existing_collections
+    has_vlm = f"collection_{base_doc_id}_vlm" in existing_collections
     
     return jsonify({
         "base_doc_id": base_doc_id,
-        "is_duplicate": is_duplicate,
-        "seed_info": unique_seed,
-        "process_type": process_type
+        "is_duplicate": has_ocr or has_vlm,  # 任一存在即視為已有快取
+        "has_ocr": has_ocr,
+        "has_vlm": has_vlm,
+        "seed_info": unique_seed
     })
 
 @app.route("/api/trigger_ocr", methods=["POST"])
@@ -389,34 +400,56 @@ def api_trigger_vlm():
 @app.route("/api/trigger_query", methods=["POST"])
 def api_trigger_query():
     global TASK_STATUS, ACTIVE_CANCELLATIONS
-
+    
+    # 檢查是否有其他查詢任務正在執行，以維護執行緒安全
     with status_lock:
         if TASK_STATUS["query"]["running"]:
-            return jsonify({"error": "Query task is already running"}), 400
-        TASK_STATUS["query"] = {"running": True, "msg": "Retrieving database and generating answers...", "success": True}
-        
+            return jsonify({"error": "A query task is already running in the background."}), 400
+
     data = request.json or {}
-    user_query = data.get("query", "")
-    target_id = data.get("doc_id", "").strip()
-    provider = data.get("provider", "")
+    user_query = data.get("query", "").strip()
+    target_id = data.get("doc_id", "").strip()  # 前端傳入的純淨 base_doc_id (例如：MD5 雜湊值)
+    
+    # 新增：接收前端傳入的快取製程類型，預設為 "ocr"（向下相容）
+    process_type = data.get("process_type", "ocr").strip().lower()
+
+    # 提取 LLM 模型配置參數
+    provider = data.get("provider", "ollama")
     model_name = data.get("model_name", "")
     api_key = data.get("api_key", "")
-    target_ip = data.get("ip", "localhost")
+    target_ip = data.get("ip", "127.0.0.1")
     target_port = data.get("port", "11434")
-    
+
+    if not user_query:
+        return jsonify({"error": "Query text cannot be empty"}), 400
     if not target_id:
-        with status_lock:
-            TASK_STATUS["query"] = {"running": False, "msg": "Invalid document ID provided.", "success": False}
-        return jsonify({"error": "Invalid document ID provided."}), 400
-        
-    ACTIVE_CANCELLATIONS["query"] = TaskCancellation()
-    
+        return jsonify({"error": "Missing valid context database text reference hash identifier"}), 400
+
+    # 關鍵修正點：根據製程類型動態加上後綴，讓背景檢索執行緒能抓到正確的 ChromaDB Collection
+    db_target_id = f"{target_id}_{process_type}"
+
+    # 初始化任務取消憑證與狀態
+    with status_lock:
+        ACTIVE_CANCELLATIONS["query"] = threading.Event()
+        TASK_STATUS["query"] = {
+            "running": True,
+            "step": f"Initializing structural context retrieval via vector index collection ({process_type.toUpperCase()})...",
+            "progress": 0,
+            "answer": ""
+        }
+
+    # 啟動背景執行緒處理檢索與模型生成
+    # 注意：我們將 db_target_id (帶有後綴的識別碼) 傳入背景工作函數
     t = threading.Thread(
         target=background_query_worker,
-        args=(user_query, target_id, provider, model_name, api_key, target_ip, target_port, ACTIVE_CANCELLATIONS["query"])
+        args=(user_query, db_target_id, provider, model_name, api_key, target_ip, target_port, ACTIVE_CANCELLATIONS["query"])
     )
     t.start()
-    return jsonify({"status": "started"})
+
+    return jsonify({
+        "status": "started", 
+        "msg": f"Query process successfully targeted at collection: {db_target_id}"
+    })
 
 @app.route("/api/save_answer_md", methods=["POST"])
 def api_save_answer_md():
@@ -641,13 +674,12 @@ def api_delete_database():
         # 1. 執行刪除
         client.delete_collection(name=collection_name)
         
-        # 2. 強制將記憶體資料 Flush 寫回實體硬碟 (關鍵修正)
-        # 針對新版 ChromaDB 的 PersistentClient，內部調用其垃圾回收與併發同步機制
-        if hasattr(client, "_system") and hasattr(client._system, "stop"):
-            # 透過暫時關閉或觸發系統元件的 stop/save 來強迫 SQLite 釋放 WAL (Write-Ahead Logging) 鎖定並寫入硬碟
-            client._system.stop()
+        # 2. 安全地將記憶體資料 Flush 寫回實體硬碟 (修正 client._system.stop() 造成的永久關閉問題)
+        # 透過觸發內部的唯一的資料庫密鑰同步，強迫 SQLite 釋放 WAL 鎖定並寫入
+        if hasattr(client, "_producer") and hasattr(client._producer, "flush"):
+            client._producer.flush()
             
-        # 3. 同步清理 database_notes.json 中的備註，避免殘留孤兒資料
+        # 3. 同步清理 database_notes.json 中的備註
         if os.path.exists(NOTES_FILE):
             try:
                 with open(NOTES_FILE, "r", encoding="utf-8") as f:
@@ -659,7 +691,7 @@ def api_delete_database():
             except Exception as note_err:
                 app_logger.warning(f"[Warning] Failed to clean up notes for {target_doc_id}: {note_err}")
 
-        return jsonify({"success": True, "msg": f"Collection {collection_name} and its physical sync completed."})
+        return jsonify({"success": True, "msg": f"Collection {collection_name} deleted and physical sync completed."})
         
     except Exception as e:
         return jsonify({"error": f"Deletion failed: {e}"}), 400
