@@ -688,47 +688,67 @@
     }
 
     function saveCurrentAnswerToMD() {
-        const docId = document.getElementById("ent_qa_doc_id").value.trim(); 
-        const queryText = document.getElementById("ent_query").value.trim();
-        const answerText = document.getElementById("txt_answer").value.trim(); 
+        const docId = document.getElementById("ent_qa_doc_id") ? document.getElementById("ent_qa_doc_id").value.trim() : ""; 
+        const queryText = document.getElementById("ent_query") ? document.getElementById("ent_query").value.trim() : "";
+        const answerText = document.getElementById("txt_answer") ? document.getElementById("txt_answer").value.trim() : ""; 
         
         if (!queryText || !answerText) {
             return alert("目前沒有查詢問題或 AI 解答內容，無法匯出。");
         }
         
-        // 從現有的全域資料庫列表中，尋找目前 doc_id 對應的原始檔案名稱
+        // 1. 自動尋找目前選定的資料庫原始名稱，作為預設檔名的一部分
         let origName = "QA_Export";
-        if (global_db_list && global_db_list.length > 0) {
+        if (typeof global_db_list !== 'undefined' && global_db_list && global_db_list.length > 0) {
             let matchedDb = global_db_list.find(db => db.doc_id === docId);
             if (matchedDb && matchedDb.orig_name) {
-                origName = matchedDb.orig_name;
+                // 過濾掉不合法的檔案名稱字元
+                origName = matchedDb.orig_name.replace(/[\\/:*?"<>|]/g, "_");
             }
         }
     
-        fetch("/api/save_answer_md", {
-            method: "POST",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                doc_id: docId,
-                query: queryText,
-                answer: answerText,
-                orig_name: origName
-            })
-        })
-        .then(response => response.json())
-        .then(data => {
-            if (data.success) {
-                alert(`${data.msg}\n檔案名稱: ${data.file_name}`);
-            } else {
-                alert(`儲存失敗: ${data.error}`);
-            }
-        })
-        .catch(err => {
-            console.error("Save MD error:", err);
-            alert("網路或伺服器異常，無法儲存");
-        });
+        // 2. 產生 YYYYMMDD_HHMMSS 時間戳記
+        const now = new Date();
+        const timestamp = now.getFullYear() + 
+                        String(now.getMonth() + 1).padStart(2, '0') + 
+                        String(now.getDate()).padStart(2, '0') + "_" + 
+                        String(now.getHours()).padStart(2, '0') + 
+                        String(now.getMinutes()).padStart(2, '0') + 
+                        String(now.getSeconds()).padStart(2, '0');
+    
+        const defaultFileName = `QA_${origName}_${timestamp}.md`;
+    
+        // 3. 組合 Markdown 內容結構
+        const mdContent = `# AI 知識庫檢索最佳解答\n\n` +
+                          `- **來源文件識別碼**: \`${docId}\`\n` +
+                          `- **產生時間**: ${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}\n\n` +
+                          `---\n\n` +
+                          `## ❓ 使用者提問\n` +
+                          `> ${queryText}\n\n` +
+                          `---\n\n` +
+                          `## 🤖 AI 最佳解答\n\n` +
+                          `${answerText}\n\n` +
+                          `---\n` +
+                          `*檔案由本地 RAG 知識庫系統自動生成*\n`;
+    
+        // 4. 建立 Blob 物件並透過瀏覽器觸發下載視窗
+        try {
+            const blob = new Blob([mdContent], { type: "text/markdown;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = defaultFileName; // 設定瀏覽器預設建議的檔案名稱
+            
+            document.body.appendChild(link);
+            link.click(); // 模擬點擊，彈出瀏覽器的儲存路徑選擇視窗
+            
+            // 清理記憶體
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error("下載 Markdown 檔案發生錯誤:", err);
+            alert("瀏覽器不支援此下載方式或發生異常");
+        }
     }
 
 </script>
