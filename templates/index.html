@@ -59,8 +59,8 @@
         <div id="page_range_box" style="display:none; border: 1px solid #cbd5e1; padding: 15px; margin-bottom: 15px;">
             <label>🎯 頁數擷取：大型文件 PDF 擷取頁數範圍 (空白表示擷取全檔)</label>
             <div class="row">
-                <span>起始頁碼:</span><input type="text" id="ent_start_page" style="width:80px;">
-                <span>結束頁碼:</span><input type="text" id="ent_end_page" style="width:80px;">
+                <span>起始頁碼:</span><input type="text" id="ent_start_page" style="width:80px;" oninput="onPageRangeChanged()">
+                <span>結束頁碼:</span><input type="text" id="ent_end_page" style="width:80px;" oninput="onPageRangeChanged()">
             </div>
         </div>
 
@@ -240,10 +240,8 @@
     let global_base_id = "";
     let cached_inspect_data = [];
     let selected_delete_id = null;
-    // 全域變數儲存原始資料庫清單，以便前端搜尋篩選
     let global_db_list = [];
 
-    // 修改後最新：重新整理快取資料庫清單並初始化狀態
     function refreshDatabases() {
         fetch('/api/list_databases')
         .then(r => r.json()).then(data => {
@@ -252,7 +250,6 @@
             global_db_list = data.databases || [];
             renderManagerTable(global_db_list);
             
-            // 重置關閉備註編輯區
             if (document.getElementById('notes_editor_box')) {
                 document.getElementById('notes_editor_box').style.display = 'none';
             }
@@ -260,7 +257,6 @@
         });
     }
 
-    // 將資料真正渲染至管理表格的獨立函數
     function renderManagerTable(listData) {
         let tbody = document.querySelector('#db_table tbody');
         if (!tbody) return;
@@ -270,13 +266,11 @@
             let tr = document.createElement('tr');
             tr.id = "db_row_" + db.doc_id;
             
-            // 當點擊表格中的項目列時的觸發動作
             tr.onclick = () => {
                 document.querySelectorAll('#db_table tr').forEach(el => el.classList.remove('selected'));
                 tr.classList.add('selected');
                 selected_delete_id = db.doc_id;
                 
-                // 顯示備註編輯方塊，並把既有的備註帶入輸入框中
                 if (document.getElementById('notes_editor_box')) {
                     document.getElementById('notes_editor_box').style.display = 'block';
                 }
@@ -285,7 +279,6 @@
                 }
             };
             
-            // 處理顯示備註內文，若為空則顯示淡色提示字
             let notesDisplay = db.notes ? db.notes : "<span style='color:#94a3b8; font-size:12px;'>點擊此列可編輯備註...</span>";
             
             tr.innerHTML = `
@@ -300,7 +293,6 @@
         });
     }
 
-    // 前端實時無刷新關鍵字篩選功能 (支援原始檔名、識別碼與備註)
     function filterManagerTable() {
         let filterInput = document.getElementById('ent_filter_keyword');
         if (!filterInput) return;
@@ -321,7 +313,6 @@
         renderManagerTable(filtered);
     }
 
-    // 點擊儲存按鈕時，將備註打回後端 API 的保存請求
     function saveDatabaseNotes() {
         if(!selected_delete_id) return alert("請先點選想要編輯備註的文件快取列。");
         let notesInput = document.getElementById('txt_selected_notes');
@@ -336,11 +327,9 @@
             })
         }).then(r => r.json()).then(data => {
             if(data.success) {
-                // 直接更新前端記憶體全域陣列裡的內容，不用重新洗牌頁面，維持現有的篩選輸入狀態
                 let item = global_db_list.find(db => db.doc_id === selected_delete_id);
                 if(item) item.notes = notesText;
                 
-                // 依當前的篩選字詞重新渲染畫面
                 filterManagerTable();
                 alert("備註欄位已儲存更新！");
             } else {
@@ -353,7 +342,9 @@
         document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
         document.getElementById(tabId).classList.add('active');
-        event.target.classList.add('active');
+        if(event && event.target) {
+            event.target.classList.add('active');
+        }
         if(tabId === 'manager-tab') refreshDatabases();
         
         if(tabId === 'qa-tab' && document.getElementById('ent_doc_id').value) {
@@ -368,31 +359,63 @@
         let filename = fileInput.files[0].name;
         document.getElementById('lbl_file_status').innerText = "已選取: " + filename;
 
+        document.getElementById('page_range_box').style.display = 'block';
+        document.getElementById('conflict_group_box').style.display = 'block';
+        document.getElementById('t1_vlm_config_box').style.display = 'block';
+        document.getElementById('btn_run_vlm_reconstruct').style.display = 'block';
+        
+        // 預設以 ocr 做初次檢查
+        requestUpdatedDocId("ocr");
+    }
+
+    function onPageRangeChanged() {
+        // 頁碼改變時預設檢查 ocr 快取狀態
+        requestUpdatedDocId("ocr");
+    }
+
+    function requestUpdatedDocId(forcedProcessType) {
+        let fileInput = document.getElementById('pdf_file');
+        if(!fileInput || !fileInput.files.length) return;
+        
+        let filename = fileInput.files[0].name;
+        let startPage = document.getElementById('ent_start_page').value.trim();
+        let endPage = document.getElementById('ent_end_page').value.trim();
+        
+        // 根據傳入參數決定製程類型，預設為 "ocr"
+        let processType = forcedProcessType || "ocr";
+
         fetch('/api/check_file', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({file_name: filename})
+            body: JSON.stringify({
+                file_name: filename,
+                start_page: startPage,
+                end_page: endPage,
+                process_type: processType  // <-- 關鍵修正：將製程傳給後端以計算專屬 MD5
+            })
         }).then(r => r.json()).then(data => {
             global_base_id = data.base_doc_id;
-            document.getElementById('page_range_box').style.display = 'block';
-            document.getElementById('conflict_group_box').style.display = 'block';
-            document.getElementById('t1_vlm_config_box').style.display = 'block';
-            document.getElementById('btn_run_vlm_reconstruct').style.display = 'block';
             
             let msgEl = document.getElementById('lbl_id_msg');
             let radioBlock = document.getElementById('radio_block');
             if(data.is_duplicate) {
-                msgEl.innerText = "🔎 偵測到重複文件：此檔案過去已建立過快取索引！(直接點擊下方紫色按鈕做 VLM 萃取)";
+                msgEl.innerText = `🔎 偵測到重複文件段落：此範圍過去已建立過 [${processType.toUpperCase()}] 快取索引！`;
                 msgEl.style.color = "#b45309";
                 radioBlock.style.display = "block";
-                document.getElementById('radio_keep').checked = true;
             } else {
-                msgEl.innerText = "✨ 偵測到新文件：系統已自動分派識別碼。";
+                msgEl.innerText = `✨ 偵測到新文件段落：系統已依頁碼與製程分派唯一識別碼。`;
                 msgEl.style.color = "#1d4ed8";
                 radioBlock.style.display = "none";
+                document.getElementById('radio_keep').checked = true;
             }
             toggleStrategy();
-            onT1ProviderChanged(); 
+            
+            // 只有在 VLM 配置區塊可見時才刷新 VLM 模型清單
+            if (processType === "vlm") {
+                onT1ProviderChanged(); 
+            }
+        }).catch(err => {
+            console.error("Failed to sync structural document hash context identifier:", err);
         });
     }
 
@@ -428,47 +451,67 @@
         }).then(r => r.json()).then(data => {
             let combo = document.getElementById('t1_vlm_model_edit');
             combo.innerHTML = "";
-            data.models.forEach(m => {
+            if(data.models && data.models.length > 0) {
+                data.models.forEach(m => {
+                    let opt = document.createElement('option');
+                    opt.value = m; opt.innerText = m; combo.appendChild(opt);
+                });
+            } else {
                 let opt = document.createElement('option');
-                opt.value = m; opt.innerText = m; combo.appendChild(opt);
-            });
+                opt.value = "No models loaded"; opt.innerText = "No models loaded"; combo.appendChild(opt);
+            }
         });
     }
 
     function triggerOcr() {
         let fileInput = document.getElementById('pdf_file');
         if(!fileInput.files.length) return alert("請先選取檔案");
+
+        // 1. 強制切換並重新計算 OCR 專屬的 doc_id
+        requestUpdatedDocId("ocr");
         
-        let formData = new FormData();
-        formData.append('file', fileInput.files[0]);
-        formData.append('doc_id', document.getElementById('ent_doc_id').value);
-        formData.append('start_page', document.getElementById('ent_start_page').value);
-        formData.append('end_page', document.getElementById('ent_end_page').value);
+        // 稍微延遲確保 input 欄位內的值已更新 (或直接抓取 global_base_id)
+        setTimeout(() => {
+            let formData = new FormData();
+            formData.append('file', fileInput.files[0]);
+            formData.append('doc_id', document.getElementById('ent_doc_id').value);
+            formData.append('start_page', document.getElementById('ent_start_page').value);
+            formData.append('end_page', document.getElementById('ent_end_page').value);
 
-        document.getElementById('btn_run_ocr').disabled = true;
-        document.getElementById('btn_stop_ocr').disabled = false;
-        document.getElementById('progress_ocr').style.display = 'block';
+            document.getElementById('btn_run_ocr').disabled = true;
+            document.getElementById('btn_stop_ocr').disabled = false;
+            document.getElementById('progress_ocr').style.display = 'block';
 
-        fetch('/api/trigger_ocr', { method: 'POST', body: formData })
-        .then(() => pollStatus('ocr'));
+            fetch('/api/trigger_ocr', { method: 'POST', body: formData })
+            .then(() => pollStatus('ocr'));
+        }, 100);
     }
 
     function triggerVlm() {
-        document.getElementById('btn_run_ocr').disabled = true;
-        document.getElementById('btn_stop_ocr').disabled = false;
-        document.getElementById('progress_ocr').style.display = 'block';
+        let fileInput = document.getElementById('pdf_file');
+        if(!fileInput.files.length) return alert("請先選取檔案");
 
-        fetch('/api/trigger_vlm', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({
-                doc_id: document.getElementById('ent_doc_id').value,
-                provider: document.getElementById('t1_vlm_provider_combo').value,
-                model_name: document.getElementById('t1_vlm_model_edit').value,
-                ip: document.getElementById('t1_vlm_ip_edit').value,
-                port: document.getElementById('t1_vlm_port_edit').value
-            })
-        }).then(() => pollStatus('vlm'));
+        // 1. 強制切換並重新計算 VLM 專屬的 doc_id
+        requestUpdatedDocId("vlm");
+
+        // 稍微延遲確保 input 欄位內的值已更新
+        setTimeout(() => {
+            document.getElementById('btn_run_ocr').disabled = true;
+            document.getElementById('btn_stop_ocr').disabled = false;
+            document.getElementById('progress_ocr').style.display = 'block';
+
+            fetch('/api/trigger_vlm', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    doc_id: document.getElementById('ent_doc_id').value, // 這裏拿到的會是帶有 _vlm 識別的 ID
+                    provider: document.getElementById('t1_vlm_provider_combo').value,
+                    model_name: document.getElementById('t1_vlm_model_edit').value,
+                    ip: document.getElementById('t1_vlm_ip_edit').value,
+                    port: document.getElementById('t1_vlm_port_edit').value
+                })
+            }).then(() => pollStatus('vlm'));
+        }, 100);
     }
 
     function cancelTask(type) {
@@ -526,10 +569,15 @@
             let combo = document.getElementById('cbo_models');
             if(!combo) return;
             combo.innerHTML = "";
-            data.models.forEach(m => {
+            if(data.models && data.models.length > 0) {
+                data.models.forEach(m => {
+                    let opt = document.createElement('option');
+                    opt.value = m; opt.innerText = m; combo.appendChild(opt);
+                });
+            } else {
                 let opt = document.createElement('option');
-                opt.value = m; opt.innerText = m; combo.appendChild(opt);
-            });
+                opt.value = "No models loaded"; opt.innerText = "No models loaded"; combo.appendChild(opt);
+            }
         });
     }
 
@@ -629,6 +677,7 @@
         });
         document.addEventListener('mouseup', () => { isDragging = false; document.body.style.cursor = 'default'; });
     }
+
     function uploadAndMergeDatabase() {
         const fileInput = document.getElementById('import_zip_file');
         const strategySelect = document.getElementById('import_strategy');
@@ -648,16 +697,17 @@
             return;
         }
         
-        // 建立 FormData 物件傳送檔案與引數
         const formData = new FormData();
         formData.append('file', file);
         formData.append('strategy', strategy);
         
-        // 顯示載入中提示
-        const btn = event.target;
-        const originalText = btn.innerText;
-        btn.disabled = true;
-        btn.innerText = "處理合併中，請稍候...";
+        const btn = event ? event.target : null;
+        let originalText = "";
+        if(btn) {
+            originalText = btn.innerText;
+            btn.disabled = true;
+            btn.innerText = "處理合併中，請稍候...";
+        }
         
         fetch('/api/import_database', {
             method: 'POST',
@@ -665,24 +715,25 @@
         })
         .then(response => response.json())
         .then(data => {
-            btn.disabled = false;
-            btn.innerText = originalText;
+            if(btn) {
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
             
             if (data.success) {
                 alert(data.msg || "資料庫合併成功！");
-                fileInput.value = ""; // 清空選取檔案
-                // 呼叫您現有的刷新表格函數（對照您原碼中叫 refreshDatabases）
-                if (typeof refreshDatabases === 'function') {
-                    refreshDatabases();
-                }
+                fileInput.value = "";
+                refreshDatabases();
             } else {
                 alert("匯入失敗：" + (data.error || "未知錯誤"));
             }
         })
         .catch(error => {
-            btn.disabled = false;
-            btn.innerText = originalText;
-            console.error("Error:", error);
+            if(btn) {
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
+            console.error("Network runtime anomaly triggered during DB ingestion:", error);
             alert("網路請求發生錯誤，請查看控制台日誌。");
         });
     }
@@ -696,17 +747,14 @@
             return alert("目前沒有查詢問題或 AI 解答內容，無法匯出。");
         }
         
-        // 1. 自動尋找目前選定的資料庫原始名稱，作為預設檔名的一部分
         let origName = "QA_Export";
-        if (typeof global_db_list !== 'undefined' && global_db_list && global_db_list.length > 0) {
+        if (global_db_list && global_db_list.length > 0) {
             let matchedDb = global_db_list.find(db => db.doc_id === docId);
             if (matchedDb && matchedDb.orig_name) {
-                // 過濾掉不合法的檔案名稱字元
                 origName = matchedDb.orig_name.replace(/[\\/:*?"<>|]/g, "_");
             }
         }
     
-        // 2. 產生 YYYYMMDD_HHMMSS 時間戳記
         const now = new Date();
         const timestamp = now.getFullYear() + 
                         String(now.getMonth() + 1).padStart(2, '0') + 
@@ -717,7 +765,6 @@
     
         const defaultFileName = `QA_${origName}_${timestamp}.md`;
     
-        // 3. 組合 Markdown 內容結構
         const mdContent = `# AI 知識庫檢索最佳解答\n\n` +
                           `- **來源文件識別碼**: \`${docId}\`\n` +
                           `- **產生時間**: ${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')} ${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}\n\n` +
@@ -730,28 +777,24 @@
                           `---\n` +
                           `*檔案由本地 RAG 知識庫系統自動生成*\n`;
     
-        // 4. 建立 Blob 物件並透過瀏覽器觸發下載視窗
         try {
             const blob = new Blob([mdContent], { type: "text/markdown;charset=utf-8;" });
             const url = URL.createObjectURL(blob);
             
             const link = document.createElement("a");
             link.href = url;
-            link.download = defaultFileName; // 設定瀏覽器預設建議的檔案名稱
+            link.download = defaultFileName;
             
             document.body.appendChild(link);
-            link.click(); // 模擬點擊，彈出瀏覽器的儲存路徑選擇視窗
+            link.click();
             
-            // 清理記憶體
             document.body.removeChild(link);
             URL.revokeObjectURL(url);
         } catch (err) {
-            console.error("下載 Markdown 檔案發生錯誤:", err);
+            console.error("Markdown serialization and local file streaming failure:", err);
             alert("瀏覽器不支援此下載方式或發生異常");
         }
     }
-
 </script>
-
 </body>
 </html>

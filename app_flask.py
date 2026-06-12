@@ -25,10 +25,10 @@ from indexer.indexer import build_vector_index
 from retriever.retriever import execute_rag_retrieval
 from model.llm import query_llm, get_local_models
 
-# 从 config.settings 引入 CHROMADB_DIR
+# 從 config.settings 引入 CHROMADB_DIR
 from config.settings import RAW_DATA_DIR, CHROMADB_DIR
 
-# 将 NOTES_FILE 的路径直接指向 CHROMADB_DIR 内
+# 將 NOTES_FILE 的路徑直接指向 CHROMADB_DIR 內
 NOTES_FILE = os.path.join(CHROMADB_DIR, "database_notes.json")
 
 # =====================================================================
@@ -41,7 +41,7 @@ app = Flask(__name__, template_folder="templates")
 status_lock = threading.Lock()
 
 # Global Task Status initialization controlled via Werkzeug Environment variable
-if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+if os.environ.get("WERKZEUK_RUN_MAIN") == "true":
     print("[Flask Reloader] Real child process detected. Initializing TASK_STATUS cluster.")
     TASK_STATUS = {
         "ocr": {"running": False, "msg": "Idle", "success": True},
@@ -81,7 +81,7 @@ def preload_and_verify_weights():
     print("==================================================\n")
 
 # Run preloading only in the active worker process to prevent double memory usage
-if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+if os.environ.get("WERKZEUK_RUN_MAIN") == "true":
     preload_and_verify_weights()
 
 # =====================================================================
@@ -287,36 +287,41 @@ def api_get_models():
 @app.route("/api/check_file", methods=["POST"])
 def api_check_file():
     import chromadb
-    import uuid  # 引入 uuid 模組來產生絕對不重複的識別碼
     
-    file_name = request.json.get("file_name", "")
+    data = request.json or {}
+    file_name = data.get("file_name", "")
+    
+    # 接收前端傳入的特定批次頁碼範圍
+    start_page = str(data.get("start_page", "")).strip()
+    end_page = str(data.get("end_page", "")).strip()
+    
+    # 新增：接收前端傳入的製程類型 (例如: 'ocr' 或 'vlm')，預設為 'ocr' 以確保向下相容
+    process_type = str(data.get("process_type", "ocr")).strip().lower()
+    
     if not file_name:
         return jsonify({"error": "Invalid file name"}), 400
         
     file_base_name = os.path.splitext(file_name)[0]
     
-    # 1. 先計算標準的 MD5 識別碼
-    base_doc_id = hashlib.md5(file_base_name.encode('utf-8')).hexdigest()
+    # 1. 建立包含製程後綴的特徵種子（特徵字串）
+    # 範例："蔡經緯-經濟學大意_1_50_ocr" 或 "蔡經緯-經濟學大意_1_50_vlm"
+    unique_seed = f"{file_base_name}_{start_page}_{end_page}_{process_type}"
+    
+    # 2. 根據此特徵字串計算出專屬於該資料段與該製程的唯一 MD5 識別碼
+    base_doc_id = hashlib.md5(unique_seed.encode('utf-8')).hexdigest()
     
     db_client = chromadb.PersistentClient(path=CHROMADB_DIR)
     existing_collections = [c.name for c in db_client.list_collections()]
     target_collection_name = f"collection_{base_doc_id}"
     
-    # 2. 檢查資料庫是否已經存在此識別碼
+    # 3. 檢查向量資料庫中是否已經存在此特定區段與製程組合的集合
     is_duplicate = target_collection_name in existing_collections
     
-    # 3. 如果重複了，我們就重新產生一個附加隨機 UUID 的全新識別碼，確保絕對不相撞
-    if is_duplicate:
-        # 使用部分 uuid 加上原本的 md5 前綴，或直接使用 uuid，這裡採 md5 混雜 uuid 的作法
-        # 這樣既能保持長度一致，又能確保絕對不重複
-        salt = uuid.uuid4().hex[:8]  # 取 8 碼隨機值
-        unique_seed = f"{file_base_name}_{salt}"
-        base_doc_id = hashlib.md5(unique_seed.encode('utf-8')).hexdigest()
-    
-    # 回傳給前端。此時的 base_doc_id 已經是過濾後「保證在資料庫中不存在」的新識別碼
     return jsonify({
         "base_doc_id": base_doc_id,
-        "is_duplicate": is_duplicate  # 仍保留通知前端「這原本是重複的檔案」
+        "is_duplicate": is_duplicate,
+        "seed_info": unique_seed,
+        "process_type": process_type
     })
 
 @app.route("/api/trigger_ocr", methods=["POST"])
@@ -441,7 +446,7 @@ def api_save_answer_md():
         md_file_name = f"QA_{clean_name}_{timestamp}.md"
         md_file_path = os.path.join(RAW_DATA_DIR, md_file_name)
 
-        # 3. 組合 Markdown 內容結構（配合你要求的繁體中文與專業格式）
+        # 3. 組合 Markdown 內容結構
         md_content = f"""# AI 知識庫檢索最佳解答
 
 - **來源文件識別碼**: `{target_id}`
@@ -462,7 +467,7 @@ def api_save_answer_md():
 *檔案由本地 RAG 知識庫系統自動生成*
 """
 
-        # 4. 寫入檔案（維持不使用簡體中文註解與維持環境相容性）
+        # 4. 寫入檔案
         with open(md_file_path, "w", encoding="utf-8") as f:
             f.write(md_content)
 
@@ -630,10 +635,34 @@ def api_delete_database():
     try:
         import chromadb
         client = chromadb.PersistentClient(path=CHROMADB_DIR)
-        client.delete_collection(name=f"collection_{target_doc_id}")
-        return jsonify({"success": True})
+        
+        collection_name = f"collection_{target_doc_id}"
+        
+        # 1. 執行刪除
+        client.delete_collection(name=collection_name)
+        
+        # 2. 強制將記憶體資料 Flush 寫回實體硬碟 (關鍵修正)
+        # 針對新版 ChromaDB 的 PersistentClient，內部調用其垃圾回收與併發同步機制
+        if hasattr(client, "_system") and hasattr(client._system, "stop"):
+            # 透過暫時關閉或觸發系統元件的 stop/save 來強迫 SQLite 釋放 WAL (Write-Ahead Logging) 鎖定並寫入硬碟
+            client._system.stop()
+            
+        # 3. 同步清理 database_notes.json 中的備註，避免殘留孤兒資料
+        if os.path.exists(NOTES_FILE):
+            try:
+                with open(NOTES_FILE, "r", encoding="utf-8") as f:
+                    notes_data = json.load(f)
+                if target_doc_id in notes_data:
+                    del notes_data[target_doc_id]
+                    with open(NOTES_FILE, "w", encoding="utf-8") as f:
+                        json.dump(notes_data, f, ensure_ascii=False, indent=4)
+            except Exception as note_err:
+                app_logger.warning(f"[Warning] Failed to clean up notes for {target_doc_id}: {note_err}")
+
+        return jsonify({"success": True, "msg": f"Collection {collection_name} and its physical sync completed."})
+        
     except Exception as e:
         return jsonify({"error": f"Deletion failed: {e}"}), 400
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=4999, debug=True)
+    app.run(host="127.0.0.1", port=5000, debug=True)
