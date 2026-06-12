@@ -524,6 +524,69 @@ def api_trigger_query():
     t.start()
     return jsonify({"status": "started"})
 
+@app.route("/api/save_answer_md", methods=["POST"])
+def api_save_answer_md():
+    """
+    將 AI 生成的問答解答另存為 Markdown 檔案，並儲存至 RAW_DATA_DIR 中
+    """
+    data = request.json or {}
+    target_id = data.get("doc_id", "").strip()
+    user_query = data.get("query", "").strip()
+    ai_answer = data.get("answer", "").strip()
+    orig_name = data.get("orig_name", "knowledge_base").strip()
+
+    if not user_query or not ai_answer:
+        return jsonify({"error": "缺少問題或 AI 回答內容，無法匯出"}), 400
+
+    try:
+        # 1. 建立儲存目錄（沿用系統既有的 RAW_DATA_DIR）
+        os.makedirs(RAW_DATA_DIR, exist_ok=True)
+        
+        # 2. 決定 Markdown 檔案名稱（加上時間戳記避免重複）
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        # 清除檔案名稱不合法字元
+        clean_name = "".join(c for c in orig_name if c.isalnum() or c in ("_", "-")).rstrip()
+        if not clean_name:
+            clean_name = "QA_Export"
+            
+        md_file_name = f"QA_{clean_name}_{timestamp}.md"
+        md_file_path = os.path.join(RAW_DATA_DIR, md_file_name)
+
+        # 3. 組合 Markdown 內容結構（配合你要求的繁體中文與專業格式）
+        md_content = f"""# AI 知識庫檢索最佳解答
+
+- **來源文件識別碼**: `{target_id}`
+- **產生時間**: {time.strftime("%Y-%m-%d %H:%M:%S")}
+
+---
+
+## ❓ 使用者提問
+> {user_query}
+
+---
+
+## 🤖 AI 最佳解答
+
+{ai_answer}
+
+---
+*檔案由本地 RAG 知識庫系統自動生成*
+"""
+
+        # 4. 寫入檔案（維持不使用簡體中文註解與維持環境相容性）
+        with open(md_file_path, "w", encoding="utf-8") as f:
+            f.write(md_content)
+
+        return jsonify({
+            "success": True, 
+            "msg": f"Markdown 檔案已成功另存至系統目錄！",
+            "file_name": md_file_name,
+            "file_path": md_file_path
+        })
+
+    except Exception as e:
+        return jsonify({"error": f"另存 Markdown 檔案失敗: {str(e)}"}), 500
+
 @app.route("/api/cancel/<task_type>", methods=["POST"])
 def api_cancel_task(task_type):
     global ACTIVE_CANCELLATIONS

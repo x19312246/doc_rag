@@ -144,7 +144,10 @@
                 <textarea id="txt_context" class="monospace" style="height:350px; background-color:#f8fafc;" readonly></textarea>
             </div>
             <div>
-                <label style="color:#166534;">💡 AI 生成之最佳解答</label>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                    <label style="color:#166534; margin-bottom: 0;">💡 AI 生成之最佳解答</label>
+                    <button id="btn_save_md" class="btn btn-purple" style="padding: 4px 10px; font-size: 13px;" onclick="saveCurrentAnswerToMD()">💾 另存為 MD 檔案</button>
+                </div>
                 <textarea id="txt_answer" style="height:350px; background-color:#f0fdf4; color:#14532d;" readonly></textarea>
             </div>
         </div>
@@ -681,6 +684,50 @@
             btn.innerText = originalText;
             console.error("Error:", error);
             alert("網路請求發生錯誤，請查看控制台日誌。");
+        });
+    }
+
+    function saveCurrentAnswerToMD() {
+        const docId = document.getElementById("ent_qa_doc_id").value.trim(); 
+        const queryText = document.getElementById("ent_query").value.trim();
+        const answerText = document.getElementById("txt_answer").value.trim(); 
+        
+        if (!queryText || !answerText) {
+            return alert("目前沒有查詢問題或 AI 解答內容，無法匯出。");
+        }
+        
+        // 從現有的全域資料庫列表中，尋找目前 doc_id 對應的原始檔案名稱
+        let origName = "QA_Export";
+        if (global_db_list && global_db_list.length > 0) {
+            let matchedDb = global_db_list.find(db => db.doc_id === docId);
+            if (matchedDb && matchedDb.orig_name) {
+                origName = matchedDb.orig_name;
+            }
+        }
+    
+        fetch("/api/save_answer_md", {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                doc_id: docId,
+                query: queryText,
+                answer: answerText,
+                orig_name: origName
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert(`${data.msg}\n檔案名稱: ${data.file_name}`);
+            } else {
+                alert(`儲存失敗: ${data.error}`);
+            }
+        })
+        .catch(err => {
+            console.error("Save MD error:", err);
+            alert("網路或伺服器異常，無法儲存");
         });
     }
 
