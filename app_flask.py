@@ -1,6 +1,7 @@
 import os
 import sys
 import hashlib
+import shutil
 import threading
 import logging
 import time
@@ -41,7 +42,7 @@ app = Flask(__name__, template_folder="templates")
 status_lock = threading.Lock()
 
 # Global Task Status initialization controlled via Werkzeug Environment variable
-if os.environ.get("WERKZEUK_RUN_MAIN") == "true":
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     print("[Flask Reloader] Real child process detected. Initializing TASK_STATUS cluster.")
     TASK_STATUS = {
         "ocr": {"running": False, "msg": "Idle", "success": True},
@@ -76,12 +77,23 @@ def preload_and_verify_weights():
         del rerank_model
         
         print("[Model Weight Initialization] Status: All model configurations verified and ready.")
+        embed_ok = True
+        rerank_ok = True
     except Exception as e:
         print(f"[CRITICAL] Model weight preloading workflow encountered a failure: {e}")
+        embed_ok = False
+        rerank_ok = False
+
+    if embed_ok and rerank_ok:
+        os.environ["HF_HUB_OFFLINE"] = "1"
+        os.environ["TRANSFORMERS_OFFLINE"] = "1"
+        print("[Model Weight Initialization] Offline lock engaged: HF network requests are now fully blocked.")
+    else:
+        print("[Model Weight Initialization] WARNING: One or more models failed — offline lock NOT engaged.")
     print("==================================================\n")
 
 # Run preloading only in the active worker process to prevent double memory usage
-if os.environ.get("WERKZEUK_RUN_MAIN") == "true":
+if os.environ.get("WERKZEUG_RUN_MAIN") == "true":
     preload_and_verify_weights()
 
 # =====================================================================
@@ -147,57 +159,68 @@ ACTIVE_CANCELLATIONS = {
 def background_ocr_worker(file_path, current_generated_id, start_page, end_page, *args, **kwargs):
     global TASK_STATUS, ACTIVE_CANCELLATIONS
     cancel_token = ACTIVE_CANCELLATIONS["ocr"]
-    
+
+    source_file_name = os.path.splitext(os.path.basename(file_path))[0]
+
     try:
         with status_lock:
             TASK_STATUS["ocr"]["step"] = "Executing primary PDF structural layout extraction pipeline..."
-            
-        # 1. Trigger the original extractor (generates images into the global folder)
+
         pages_info = extract_pdf_pages_info(file_path, start_page=start_page, end_page=end_page)
-        
-        if cancel_token.is_set():
+
+        if not cancel_token.is_running:
             return
 
         with status_lock:
             TASK_STATUS["ocr"]["step"] = "Synchronizing physical image assets with unique identity hash scope..."
 
-        # 2. Define and create the unique identifier directory for VLM phase compatibility
+        # 建立此次任務專屬隔離圖片目錄
         vlm_target_dir = os.path.join(RAW_DATA_DIR, current_generated_id)
         os.makedirs(vlm_target_dir, exist_ok=True)
-        
-        # 3. Scan the default global export directory and copy assets to the isolated session directory
-        default_out_images = os.path.join("data", "processed", "out_images")
-        
-        if os.path.exists(default_out_images):
-            for file_name in os.listdir(default_out_images):
-                if file_name.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    src_file = os.path.join(default_out_images, file_name)
-                    dst_file = os.path.join(vlm_target_dir, file_name)
-                    shutil.copy2(src_file, dst_file)
 
-        if cancel_token.is_set():
+        # 複製圖片到隔離目錄並同步更新 pages_info 內的路徑
+        # 這樣 convert_pages_to_chunks 寫入 metadata 的 local_img_path 才指向永久隔離目錄
+        # 而非共用暫存目錄（out_images 可能被下次 OCR 覆蓋）
+        for p_data in pages_info:
+            master_img = p_data.get("master_page_image", "")
+            if master_img and os.path.exists(master_img):
+                dst_file = os.path.join(vlm_target_dir, os.path.basename(master_img))
+                shutil.copy2(master_img, dst_file)
+                p_data["master_page_image"] = dst_file
+            for img_item in p_data.get("images", []):
+                img_path = img_item.get("file_path", "")
+                if img_path and os.path.exists(img_path):
+                    dst_img = os.path.join(vlm_target_dir, os.path.basename(img_path))
+                    shutil.copy2(img_path, dst_img)
+                    img_item["file_path"] = dst_img
+
+        if not cancel_token.is_running:
             return
 
         with status_lock:
             TASK_STATUS["ocr"]["step"] = "Transforming localized structural tokens into vector embedding chunks..."
-            
-        chunks = convert_pages_to_chunks(pages_info)
-        
-        if cancel_token.is_set():
+
+        chunks = convert_pages_to_chunks(
+            pages_info,
+            source_name=source_file_name,
+            start_page=start_page,
+            end_page=end_page
+        )
+
+        if not cancel_token.is_running:
             return
 
         with status_lock:
             TASK_STATUS["ocr"]["step"] = "Committing base text layers into isolated ChromaDB OCR collection..."
-            
-        # 4. Build isolated vector index with explicit workflow suffix
+
         total_inserted = build_vector_index(chunks, f"{current_generated_id}_ocr")
-        
+
         with status_lock:
             TASK_STATUS["ocr"]["running"] = False
             TASK_STATUS["ocr"]["step"] = "Completed successfully"
             TASK_STATUS["ocr"]["progress"] = 100
             TASK_STATUS["ocr"]["chunks"] = total_inserted
-            
+
     except Exception as e:
         with status_lock:
             TASK_STATUS["ocr"]["running"] = False
@@ -207,8 +230,9 @@ def background_ocr_worker(file_path, current_generated_id, start_page, end_page,
 def background_vlm_worker(target_doc_id, provider, model_name, target_ip, target_port, cancel_token):
     global TASK_STATUS
     try:
+        ocr_source_id = f"{target_doc_id}_ocr"
         new_chunks = reconstruct_pages_via_vlm(
-            target_doc_id, # 保持原始 ID
+            ocr_source_id,
             provider,
             model_name,
             target_ip,
@@ -425,15 +449,19 @@ def api_trigger_query():
     if not target_id:
         return jsonify({"error": "Missing valid context database text reference hash identifier"}), 400
 
-    # 關鍵修正點：根據製程類型動態加上後綴，讓背景檢索執行緒能抓到正確的 ChromaDB Collection
-    db_target_id = f"{target_id}_{process_type}"
+    # 防重複後綴：若前端傳入的 doc_id 已帶有 _ocr / _vlm 後綴就直接使用，否則補上
+    known_suffixes = ("_ocr", "_vlm")
+    if target_id.endswith(known_suffixes):
+        db_target_id = target_id
+    else:
+        db_target_id = f"{target_id}_{process_type}"
 
     # 初始化任務取消憑證與狀態
     with status_lock:
-        ACTIVE_CANCELLATIONS["query"] = threading.Event()
+        ACTIVE_CANCELLATIONS["query"] = TaskCancellation()
         TASK_STATUS["query"] = {
             "running": True,
-            "step": f"Initializing structural context retrieval via vector index collection ({process_type.toUpperCase()})...",
+            "step": f"Initializing structural context retrieval via vector index collection ({process_type.upper()})...",
             "progress": 0,
             "answer": ""
         }

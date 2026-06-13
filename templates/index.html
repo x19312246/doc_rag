@@ -355,11 +355,13 @@
         }
         if(tabId === 'manager-tab') refreshDatabases();
         
-        // 進入 Q&A 頁面時自動帶入快取 ID，預設加上 _ocr字樣，使用者可自行改成 _vlm 進行高精度檢索
+        // 進入 Q&A 頁面時帶入純淨的 base_doc_id（不加後綴）
+        // 後端 api_trigger_query 會根據 process_type 選擇器自動加上 _ocr 或 _vlm 後綴
         if(tabId === 'qa-tab' && document.getElementById('ent_doc_id').value) {
-            document.getElementById('ent_qa_doc_id').value = document.getElementById('ent_doc_id').value + "_ocr";
+            document.getElementById('ent_qa_doc_id').value = document.getElementById('ent_doc_id').value;
             onQaProviderChanged();
         }
+        // inspect-tab 仍需帶入完整 collection 名稱（含後綴），預設用 _ocr
         if(tabId === 'inspect-tab' && document.getElementById('ent_doc_id').value) {
             document.getElementById('ent_inspect_id').value = document.getElementById('ent_doc_id').value + "_ocr";
         }
@@ -592,7 +594,7 @@
     let selectedProcessType = "vlm"; 
     let typeUi = document.getElementById('sel_qa_process_type');
     if (typeUi) {
-        selectedProcessType = typeUi.value.trim().lower();
+        selectedProcessType = typeUi.value.trim().toLowerCase();
     }
 
     let reqPayload = {

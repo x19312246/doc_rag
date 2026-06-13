@@ -356,8 +356,8 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
         
     image_tasks = {}
     source_name = "Reconstructed_Document"
-    meta_start = 1
-    meta_end = 1
+    meta_start = None
+    meta_end = None
     
     for meta in existing_data["metadatas"]:
         if meta.get("local_img_path"):
@@ -371,6 +371,20 @@ def reconstruct_pages_via_vlm(target_doc_id, provider, model_name, target_ip, ta
                     
         if meta.get("source"):
             source_name = meta.get("source")
+        
+        # 🔑 修正：從 OCR metadata 讀取實際頁碼範圍，取所有 chunk 中的最小與最大值
+        if meta.get("start_page") is not None:
+            s = int(meta["start_page"])
+            meta_start = s if meta_start is None else min(meta_start, s)
+        if meta.get("end_page") is not None:
+            e = int(meta["end_page"])
+            meta_end = e if meta_end is None else max(meta_end, e)
+    
+    # fallback：若 metadata 內完全沒有頁碼資訊，以 image_tasks 的實際頁碼範圍代替
+    if meta_start is None:
+        meta_start = min(image_tasks.keys()) if image_tasks else 1
+    if meta_end is None:
+        meta_end = max(image_tasks.keys()) if image_tasks else 1
             
     if not image_tasks:
         print("[VLM Engine] Termination: No master full-page image reference found in metadata database.")
