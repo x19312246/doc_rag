@@ -366,7 +366,7 @@ def api_trigger_ocr():
     with status_lock:
         if TASK_STATUS["ocr"]["running"]:
             return jsonify({"error": "OCR task is already running"}), 400
-        TASK_STATUS["ocr"] = {"running": True, "msg": "Extracting contents...", "success": True}
+        TASK_STATUS["ocr"] = {"running": True, "msg": "OCR finished...", "success": True}
         
     if 'file' not in request.files:
         with status_lock:
